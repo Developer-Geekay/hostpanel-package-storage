@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import logging
 from fastapi import HTTPException
 
@@ -14,6 +15,17 @@ from hostpanel_storage.settings import (
 logger = logging.getLogger(__name__)
 
 
+def configure_ufw_port(port: int = 9000, action: str = "allow"):
+    """Enable or disable UFW firewall rule for S3 port."""
+    try:
+        if action == "delete allow":
+            subprocess.run(["sudo", "-n", "ufw", "delete", "allow", f"{port}/tcp"], capture_output=True, text=True, check=False)
+        else:
+            subprocess.run(["sudo", "-n", "ufw", "allow", f"{port}/tcp"], capture_output=True, text=True, check=False)
+    except Exception as e:
+        logger.warning(f"Could not configure UFW port {port}/tcp: {e}")
+
+
 def on_install():
     """Run on package installation. Safe to re-run."""
     logger.info("Initializing hostpanel-package-storage...")
@@ -25,7 +37,9 @@ def on_install():
     data_path = get_data_path()
     ensure_data_dir(data_path)
     ensure_data_dir(os.path.join(data_path, "buckets"))
-    logger.info(f"hostpanel-package-storage installed cleanly. Data path: {data_path}")
+
+    configure_ufw_port(9000, "allow")
+    logger.info(f"hostpanel-package-storage installed cleanly. Data path: {data_path}, UFW port 9000 allowed.")
 
 
 def on_update():
@@ -34,6 +48,7 @@ def on_update():
     init_storage_tables()
     data_path = get_data_path()
     ensure_data_dir(data_path)
+    configure_ufw_port(9000, "allow")
     logger.info("hostpanel-package-storage update complete.")
 
 
@@ -45,6 +60,7 @@ def on_startup():
         data_path = get_data_path()
         ensure_data_dir(data_path)
         ensure_data_dir(os.path.join(data_path, "buckets"))
+        configure_ufw_port(9000, "allow")
     except Exception as e:
         logger.warning(f"Storage on_startup check failed: {e}")
 
@@ -66,7 +82,8 @@ def pre_uninstall(force: bool = False):
             )
 
         if force:
-            logger.info("Force uninstall specified. Cleaning up buckets and database records...")
+            logger.info("Force uninstall specified. Cleaning up buckets, firewall rules, and database records...")
+            configure_ufw_port(9000, "delete allow")
             data_path = get_data_path()
             if os.path.exists(data_path):
                 shutil.rmtree(data_path, ignore_errors=True)
