@@ -8,7 +8,8 @@
 
   function StoragePlugin() {
     const { ok, err } = useToast();
-    const [activeTab, setActiveTab] = useState('buckets'); // 'buckets', 'keys', 'settings'
+    const [activeTab, setActiveTab] = useState('buckets'); // 'buckets', 'keys', 'guide', 'settings'
+    const [guideTool, setGuideTool] = useState('aws_cli'); // 'aws_cli', 'python', 'nodejs', 'laravel', 'rclone'
     const [buckets, setBuckets] = useState([]);
     const [accessKeys, setAccessKeys] = useState([]);
     const [settings, setSettings] = useState(null);
@@ -33,7 +34,7 @@
     const [uploading, setUploading] = useState(false);
 
     // Delete Confirmation State
-    const [deleteTarget, setDeleteTarget] = useState(null); // { type: 'bucket'|'key'|'object', item: obj }
+    const [deleteTarget, setDeleteTarget] = useState(null);
 
     // Presign Modal State
     const [presignTarget, setPresignTarget] = useState(null);
@@ -193,6 +194,108 @@
     const totalUsedBytes = buckets.reduce((acc, b) => acc + (b.used_bytes || 0), 0);
     const totalUsedMb = (totalUsedBytes / (1024 * 1024)).toFixed(2);
     const s3Endpoint = window.location.protocol + '//' + window.location.hostname + ':9000';
+    const s3HttpsEndpoint = window.location.protocol + '//' + window.location.hostname + ':' + window.location.port + '/cpanelapi/storage/s3';
+
+    const renderGuideContent = () => {
+      const sampleKey = accessKeys.length > 0 ? accessKeys[0].access_key : 'YOUR_ACCESS_KEY_ID';
+      if (guideTool === 'aws_cli') {
+        return `# Configure AWS CLI credentials
+aws configure set aws_access_key_id ${sampleKey}
+aws configure set aws_secret_access_key YOUR_SECRET_ACCESS_KEY
+aws configure set default.region us-east-1
+
+# List Buckets (HTTP Port 9000)
+aws s3 ls --endpoint-url ${s3Endpoint}
+
+# List Buckets (HTTPS SSL Port)
+aws s3 ls --endpoint-url ${s3HttpsEndpoint}
+
+# Upload File to Bucket
+aws s3 cp myfile.txt s3://my-bucket/ --endpoint-url ${s3Endpoint}`;
+      }
+      if (guideTool === 'python') {
+        return `import boto3
+
+# Initialize S3 Client
+s3 = boto3.client(
+    's3',
+    endpoint_url='${s3Endpoint}',
+    aws_access_key_id='${sampleKey}',
+    aws_secret_access_key='YOUR_SECRET_ACCESS_KEY',
+    region_name='us-east-1'
+)
+
+# Upload File
+s3.upload_file('local_photo.jpg', 'my-bucket', 'uploads/photo.jpg')
+
+# Download File
+s3.download_file('my-bucket', 'uploads/photo.jpg', 'downloaded_photo.jpg')
+
+# List Objects in Bucket
+response = s3.list_objects_v2(Bucket='my-bucket')
+for obj in response.get('Contents', []):
+    print(obj['Key'], obj['Size'])`;
+      }
+      if (guideTool === 'nodejs') {
+        return `import { S3Client, PutObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { readFileSync } from "fs";
+
+const s3 = new S3Client({
+  endpoint: "${s3Endpoint}",
+  region: "us-east-1",
+  credentials: {
+    accessKeyId: "${sampleKey}",
+    secretAccessKey: "YOUR_SECRET_ACCESS_KEY",
+  },
+  forcePathStyle: true,
+});
+
+// Upload Object
+await s3.send(new PutObjectCommand({
+  Bucket: "my-bucket",
+  Key: "hello.txt",
+  Body: readFileSync("./hello.txt"),
+}));
+
+// List Objects
+const data = await s3.send(new ListObjectsV2Command({ Bucket: "my-bucket" }));
+console.log(data.Contents);`;
+      }
+      if (guideTool === 'laravel') {
+        return `// Add to config/filesystems.php in Laravel / PHP app:
+
+'disks' => [
+    'hostpanel_s3' => [
+        'driver' => 's3',
+        'key' => env('AWS_ACCESS_KEY_ID', '${sampleKey}'),
+        'secret' => env('AWS_SECRET_ACCESS_KEY', 'YOUR_SECRET_ACCESS_KEY'),
+        'region' => 'us-east-1',
+        'bucket' => env('AWS_BUCKET', 'my-bucket'),
+        'endpoint' => '${s3Endpoint}',
+        'use_path_style_endpoint' => true,
+    ],
+],
+
+// Laravel Usage:
+Storage::disk('hostpanel_s3')->put('avatar.png', $fileContents);`;
+      }
+      if (guideTool === 'rclone') {
+        return `# Add to ~/.config/rclone/rclone.conf:
+
+[hostpanel-s3]
+type = s3
+provider = Minio
+env_auth = false
+access_key_id = ${sampleKey}
+secret_access_key = YOUR_SECRET_ACCESS_KEY
+endpoint = ${s3Endpoint}
+
+# Rclone commands:
+rclone ls hostpanel-s3:my-bucket
+rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
+      }
+      return '';
+    };
 
     return html`
       <div class="page">
@@ -247,6 +350,13 @@
             onClick=${() => setActiveTab('keys')}
           >
             Access Keys (${accessKeys.length})
+          </button>
+          <button
+            class=${`btn ${activeTab === 'guide' ? 'btn-primary' : 'btn-ghost'} btn-sm`}
+            style=${{ borderRadius: '4px 4px 0 0' }}
+            onClick=${() => setActiveTab('guide')}
+          >
+            Integration Guide
           </button>
           ${settings && html`
             <button
@@ -366,7 +476,35 @@
           </div>
         `}
 
-        <!-- Tab 3: Admin Settings -->
+        <!-- Tab 3: Integration Guide -->
+        ${activeTab === 'guide' && html`
+          <div class="card">
+            <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <div>
+                <span class="card-title" style=${{ marginBottom: 0 }}>SDK & Tool Integration Guide</span>
+                <p class="page-desc" style=${{ marginTop: 4 }}>Connect your applications, scripts, or backup tools to HostPanel S3 Object Storage</p>
+              </div>
+            </div>
+
+            <!-- Sub-tab Selector for Languages/SDKs -->
+            <div style=${{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+              <button class=${`btn ${guideTool === 'aws_cli' ? 'btn-primary' : 'btn-outline'} btn-sm`} onClick=${() => setGuideTool('aws_cli')}>AWS CLI</button>
+              <button class=${`btn ${guideTool === 'python' ? 'btn-primary' : 'btn-outline'} btn-sm`} onClick=${() => setGuideTool('python')}>Python (boto3)</button>
+              <button class=${`btn ${guideTool === 'nodejs' ? 'btn-primary' : 'btn-outline'} btn-sm`} onClick=${() => setGuideTool('nodejs')}>Node.js (AWS SDK v3)</button>
+              <button class=${`btn ${guideTool === 'laravel' ? 'btn-primary' : 'btn-outline'} btn-sm`} onClick=${() => setGuideTool('laravel')}>PHP / Laravel</button>
+              <button class=${`btn ${guideTool === 'rclone' ? 'btn-primary' : 'btn-outline'} btn-sm`} onClick=${() => setGuideTool('rclone')}>Rclone</button>
+            </div>
+
+            <!-- Code Snippet Display -->
+            <div class="field">
+              <textarea rows="14" readonly style=${{ fontFamily: 'var(--font-mono)', fontSize: 13, background: 'var(--bg-3)', color: 'var(--text)', padding: 12, borderRadius: 'var(--radius-sm)' }}>
+${renderGuideContent()}
+              </textarea>
+            </div>
+          </div>
+        `}
+
+        <!-- Tab 4: Admin Settings -->
         ${activeTab === 'settings' && settings && html`
           <div class="card">
             <span class="card-title">Storage & Engine Configuration</span>
