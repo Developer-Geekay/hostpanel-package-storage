@@ -10,6 +10,7 @@
     const { ok, err } = useToast();
     const [activeTab, setActiveTab] = useState('buckets'); // 'buckets', 'keys', 'guide', 'settings'
     const [guideTool, setGuideTool] = useState('aws_cli'); // 'aws_cli', 'python', 'nodejs', 'laravel', 'rclone'
+    const [selectedGuideKey, setSelectedGuideKey] = useState('YOUR_ACCESS_KEY_ID');
     const [buckets, setBuckets] = useState([]);
     const [accessKeys, setAccessKeys] = useState([]);
     const [settings, setSettings] = useState(null);
@@ -193,11 +194,14 @@
 
     const totalUsedBytes = buckets.reduce((acc, b) => acc + (b.used_bytes || 0), 0);
     const totalUsedMb = (totalUsedBytes / (1024 * 1024)).toFixed(2);
-    const s3Endpoint = window.location.protocol + '//' + window.location.hostname + ':9000';
-    const s3HttpsEndpoint = window.location.protocol + '//' + window.location.hostname + ':' + window.location.port + '/cpanelapi/storage/s3';
+
+    // Endpoint URLs: HTTP on 9000 vs HTTPS SSL on HostPanel port
+    const s3HttpEndpoint = 'http://' + window.location.hostname + ':9000';
+    const s3HttpsEndpoint = window.location.protocol + '//' + window.location.hostname + (window.location.port ? ':' + window.location.port : '') + '/cpanelapi/storage/s3';
 
     const renderGuideContent = () => {
-      const sampleKey = accessKeys.length > 0 ? accessKeys[0].access_key : 'YOUR_ACCESS_KEY_ID';
+      const sampleKey = selectedGuideKey || 'YOUR_ACCESS_KEY_ID';
+
       if (guideTool === 'aws_cli') {
         return `# Configure AWS CLI credentials
 aws configure set aws_access_key_id ${sampleKey}
@@ -205,21 +209,21 @@ aws configure set aws_secret_access_key YOUR_SECRET_ACCESS_KEY
 aws configure set default.region us-east-1
 
 # List Buckets (HTTP Port 9000)
-aws s3 ls --endpoint-url ${s3Endpoint}
+aws s3 ls --endpoint-url ${s3HttpEndpoint}
 
 # List Buckets (HTTPS SSL Port)
 aws s3 ls --endpoint-url ${s3HttpsEndpoint}
 
 # Upload File to Bucket
-aws s3 cp myfile.txt s3://my-bucket/ --endpoint-url ${s3Endpoint}`;
+aws s3 cp myfile.txt s3://my-bucket/ --endpoint-url ${s3HttpEndpoint}`;
       }
       if (guideTool === 'python') {
         return `import boto3
 
-# Initialize S3 Client
+# Initialize S3 Client (HTTPS SSL)
 s3 = boto3.client(
     's3',
-    endpoint_url='${s3Endpoint}',
+    endpoint_url='${s3HttpsEndpoint}',
     aws_access_key_id='${sampleKey}',
     aws_secret_access_key='YOUR_SECRET_ACCESS_KEY',
     region_name='us-east-1'
@@ -241,7 +245,7 @@ for obj in response.get('Contents', []):
 import { readFileSync } from "fs";
 
 const s3 = new S3Client({
-  endpoint: "${s3Endpoint}",
+  endpoint: "${s3HttpsEndpoint}",
   region: "us-east-1",
   credentials: {
     accessKeyId: "${sampleKey}",
@@ -271,7 +275,7 @@ console.log(data.Contents);`;
         'secret' => env('AWS_SECRET_ACCESS_KEY', 'YOUR_SECRET_ACCESS_KEY'),
         'region' => 'us-east-1',
         'bucket' => env('AWS_BUCKET', 'my-bucket'),
-        'endpoint' => '${s3Endpoint}',
+        'endpoint' => '${s3HttpsEndpoint}',
         'use_path_style_endpoint' => true,
     ],
 ],
@@ -288,7 +292,7 @@ provider = Minio
 env_auth = false
 access_key_id = ${sampleKey}
 secret_access_key = YOUR_SECRET_ACCESS_KEY
-endpoint = ${s3Endpoint}
+endpoint = ${s3HttpEndpoint}
 
 # Rclone commands:
 rclone ls hostpanel-s3:my-bucket
@@ -330,8 +334,9 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
           </div>
 
           <div class="card" style=${{ padding: 16 }}>
-            <div class="card-title">S3 API Endpoint</div>
-            <div style=${{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--ok)', marginTop: 8, wordBreak: 'break-all' }}>${s3Endpoint}</div>
+            <div class="card-title">S3 API Endpoint (HTTP / HTTPS)</div>
+            <div style=${{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--ok)', marginTop: 6, wordBreak: 'break-all' }}>HTTP: ${s3HttpEndpoint}</div>
+            <div style=${{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--accent)', marginTop: 2, wordBreak: 'break-all' }}>HTTPS: ${s3HttpsEndpoint}</div>
           </div>
         </div>
 
@@ -484,6 +489,18 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
                 <span class="card-title" style=${{ marginBottom: 0 }}>SDK & Tool Integration Guide</span>
                 <p class="page-desc" style=${{ marginTop: 4 }}>Connect your applications, scripts, or backup tools to HostPanel S3 Object Storage</p>
               </div>
+              <div style=${{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label style=${{ marginBottom: 0, fontSize: 13 }}>Use Access Key:</label>
+                <select
+                  class="field"
+                  style=${{ padding: '4px 8px', fontSize: 13, minWidth: 200 }}
+                  value=${selectedGuideKey}
+                  onChange=${(e) => setSelectedGuideKey(e.target.value)}
+                >
+                  <option value="YOUR_ACCESS_KEY_ID">YOUR_ACCESS_KEY_ID (Placeholder)</option>
+                  ${accessKeys.map(k => html`<option value=${k.access_key}>${k.access_key} (${k.label || 'No label'})</option>`)}
+                </select>
+              </div>
             </div>
 
             <!-- Sub-tab Selector for Languages/SDKs -->
@@ -495,11 +512,14 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
               <button class=${`btn ${guideTool === 'rclone' ? 'btn-primary' : 'btn-outline'} btn-sm`} onClick=${() => setGuideTool('rclone')}>Rclone</button>
             </div>
 
-            <!-- Code Snippet Display -->
+            <!-- Code Snippet Display with direct value binding -->
             <div class="field">
-              <textarea rows="14" readonly style=${{ fontFamily: 'var(--font-mono)', fontSize: 13, background: 'var(--bg-3)', color: 'var(--text)', padding: 12, borderRadius: 'var(--radius-sm)' }}>
-${renderGuideContent()}
-              </textarea>
+              <textarea
+                rows="15"
+                readonly
+                value=${renderGuideContent()}
+                style=${{ fontFamily: 'var(--font-mono)', fontSize: 13, background: 'var(--bg-3)', color: 'var(--text)', padding: 12, borderRadius: 'var(--radius-sm)' }}
+              />
             </div>
           </div>
         `}
