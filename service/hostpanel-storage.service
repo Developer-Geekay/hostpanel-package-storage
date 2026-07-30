@@ -6,6 +6,8 @@ After=network.target hostpanel-api.service
 Type=simple
 User=hostpanel
 Group=hostpanel
+WorkingDirectory=/opt/hostpanel/backend
+Environment=PYTHONPATH=/opt/hostpanel/backend
 ExecStart=/bin/sh -c 'if [ -f /opt/hostpanel/backend/venv/bin/python ]; then /opt/hostpanel/backend/venv/bin/python -m uvicorn hostpanel_storage.s3_engine:public_s3_router --host 0.0.0.0 --port 9000; else /usr/bin/python3 -m uvicorn hostpanel_storage.s3_engine:public_s3_router --host 0.0.0.0 --port 9000; fi'
 Restart=on-failure
 RestartSec=5s
