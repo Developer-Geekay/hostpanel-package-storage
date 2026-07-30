@@ -1,0 +1,7 @@
+# HostPanel Storage plugin sudoers drop-in
+%hostpanel ALL=(root) NOPASSWD: /bin/systemctl start hostpanel-storage
+%hostpanel ALL=(root) NOPASSWD: /bin/systemctl stop hostpanel-storage
+%hostpanel ALL=(root) NOPASSWD: /bin/systemctl restart hostpanel-storage
+%hostpanel ALL=(root) NOPASSWD: /bin/systemctl status hostpanel-storage
+%hostpanel ALL=(root) NOPASSWD: /bin/systemctl is-active hostpanel-storage
+%hostpanel ALL=(root) NOPASSWD: /bin/mkdir -p /data/storage*

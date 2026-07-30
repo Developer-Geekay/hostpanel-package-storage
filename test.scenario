@@ -1,0 +1,27 @@
+# HostPanel Storage Package Verification Test Scenario
+
+## 1. Syntax & Integrity Checks
+- Run `python3 -m py_compile plugin/hostpanel_storage/*.py` (No syntax errors).
+- Run `node --check frontend/main.js` (No JS syntax errors).
+- Run `chmod +x build.sh && ./build.sh` (Generates `hostpanel-storage-1.0.0.zip`).
+
+## 2. Browser UI Verification (Install & UI Load)
+1. Log into HostPanel UI (`http://cpanel.consoleapi.in:2082`).
+2. Navigate to **Packages** -> **Install / Upload Package**.
+3. Upload `hostpanel-storage-1.0.0.zip`.
+4. Verify package `storage` is registered in `/cpanelapi/packages/installed`.
+5. Verify "Object Storage (S3)" appears under "Hosting" navigation section.
+
+## 3. Bucket & Object Functional Tests
+1. Navigate to Object Storage UI page.
+2. Click **Create Bucket**, name it `test-bucket`, quota 1024 MB.
+3. Verify bucket directory is created under `/data/storage/buckets/test-bucket/`.
+4. Click **New Access Key**, generate key pair, save Access Key ID and Secret Access Key.
+5. Click **Browse** on `test-bucket`, upload a file.
+6. Test **Download** and **Presign URL** generation.
+7. Verify AWS CLI command:
+   `aws s3 ls s3://test-bucket --endpoint-url http://cpanel.consoleapi.in:9000`
+
+## 4. Uninstall Safety Test
+1. Attempt uninstall while `test-bucket` exists (Must raise 409 Conflict error).
+2. Delete `test-bucket` or use force uninstall (Must remove plugin cleanly).
