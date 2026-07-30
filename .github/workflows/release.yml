@@ -27,7 +27,7 @@ jobs:
         run: |
           chmod +x build.sh
           ./build.sh
-          ZIP="hostpanel-storage-${{ steps.version.outputs.VERSION }}.zip"
+          ZIP=$(ls hostpanel-storage-*.zip | head -n 1)
           test -f "$ZIP"
           echo "ZIP=$ZIP" >> $GITHUB_ENV
 
