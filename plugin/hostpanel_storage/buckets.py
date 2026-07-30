@@ -128,21 +128,22 @@ async def create_bucket(request: BucketCreateRequest, current_user: User = Depen
         )
         bucket_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM storage_buckets WHERE id = ?", (bucket_id,)).fetchone()
+        b_dict = dict(row)
 
     log_action(current_user.username, "storage.bucket_create", name, f"quota={request.quota_mb}MB")
 
     return BucketInfo(
-        id=row["id"],
-        name=row["name"],
-        owner=row["owner"],
-        public_access=bool(row["public_access"]),
-        quota_mb=row["quota_mb"],
+        id=b_dict["id"],
+        name=b_dict["name"],
+        owner=b_dict["owner"],
+        public_access=bool(b_dict["public_access"]),
+        quota_mb=b_dict["quota_mb"],
         used_bytes=0,
         used_mb=0.0,
         object_count=0,
-        region=row["region"],
-        custom_path=row.get("custom_path"),
-        created_at=row["created_at"],
+        region=b_dict["region"],
+        custom_path=b_dict.get("custom_path"),
+        created_at=b_dict["created_at"],
     )
 
 
@@ -239,6 +240,7 @@ async def delete_bucket(name: str, force: bool = Query(False), current_user: Use
             logger.error(f"Failed to remove bucket directory {b_path}: {e}")
 
     with get_conn() as conn:
+        conn.execute("DELETE FROM storage_access_keys WHERE bucket_id = ?", (b_dict["id"],))
         conn.execute("DELETE FROM storage_buckets WHERE name = ?", (name,))
 
     log_action(current_user.username, "storage.bucket_delete", name, f"force={force}")

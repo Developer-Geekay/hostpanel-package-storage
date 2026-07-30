@@ -81,6 +81,13 @@
       loadBucketObjects(bucket.name, '');
     };
 
+    const resetBucketModal = () => {
+      setShowCreateBucketModal(false);
+      setNewBucketName('');
+      setNewBucketPublic(false);
+      setNewBucketQuota(5120);
+    };
+
     const handleCreateBucket = async (e) => {
       e.preventDefault();
       try {
@@ -90,12 +97,12 @@
           quota_mb: parseInt(newBucketQuota, 10) || 5120,
         });
         ok(`Bucket '${newBucketName}' created successfully`);
-        setShowCreateBucketModal(false);
-        setNewBucketName('');
-        setNewBucketPublic(false);
+        resetBucketModal();
         loadData();
       } catch (e) {
         err(e.message || 'Failed to create bucket');
+        resetBucketModal();
+        loadData();
       }
     };
 
@@ -197,7 +204,7 @@
           </div>
           <div style=${{ display: 'flex', gap: 8 }}>
             <button class="btn btn-outline btn-sm" onClick=${loadData}>Refresh</button>
-            <button class="btn btn-primary btn-sm" onClick=${() => setShowCreateBucketModal(true)}>+ Create Bucket</button>
+            <button class="btn btn-primary btn-sm" onClick=${() => { resetBucketModal(); setShowCreateBucketModal(true); }}>+ Create Bucket</button>
             <button class="btn btn-ghost btn-sm" onClick=${() => setShowCreateKeyModal(true)}>+ New Access Key</button>
           </div>
         </div>
@@ -390,11 +397,11 @@
 
         <!-- Create Bucket Modal -->
         ${showCreateBucketModal && html`
-          <div class="modal-overlay" onClick=${e => e.target === e.currentTarget && setShowCreateBucketModal(false)}>
+          <div class="modal-overlay" onClick=${e => e.target === e.currentTarget && resetBucketModal()}>
             <div class="modal animate-fade-in" style=${{ width: 440 }}>
               <div class="modal-header">
                 <span class="modal-title">Create S3 Bucket</span>
-                <button class="modal-close" onClick=${() => setShowCreateBucketModal(false)}>x</button>
+                <button class="modal-close" onClick=${() => resetBucketModal()}>x</button>
               </div>
               <form onSubmit=${handleCreateBucket}>
                 <div class="modal-body" style=${{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -415,7 +422,7 @@
                   </div>
                 </div>
                 <div class="modal-footer">
-                  <button type="button" class="btn btn-ghost btn-sm" onClick=${() => setShowCreateBucketModal(false)}>Cancel</button>
+                  <button type="button" class="btn btn-ghost btn-sm" onClick=${() => resetBucketModal()}>Cancel</button>
                   <button type="submit" class="btn btn-primary btn-sm">Create Bucket</button>
                 </div>
               </form>
