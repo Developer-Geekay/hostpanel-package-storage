@@ -14,6 +14,8 @@
     const [buckets, setBuckets] = useState([]);
     const [accessKeys, setAccessKeys] = useState([]);
     const [settings, setSettings] = useState(null);
+    const [customDomainInput, setCustomDomainInput] = useState('');
+    const [savingSettings, setSavingSettings] = useState(false);
     const [loading, setLoading] = useState(true);
 
     // Modal states
@@ -52,7 +54,10 @@
         ]);
         setBuckets(bRes || []);
         setAccessKeys(kRes || []);
-        if (sRes) setSettings(sRes);
+        if (sRes) {
+          setSettings(sRes);
+          setCustomDomainInput(sRes.s3_domain || '');
+        }
       } catch (e) {
         err(e.message || 'Failed to load storage data');
       } finally {
@@ -120,6 +125,22 @@
         loadData();
       } catch (e) {
         err(e.message || 'Failed to create key');
+      }
+    };
+
+    const handleSaveSettings = async (e) => {
+      e.preventDefault();
+      setSavingSettings(true);
+      try {
+        const updated = await sdk.fetch('POST', '/cpanelapi/storage/settings', {
+          s3_domain: customDomainInput.trim(),
+        });
+        setSettings(updated);
+        ok('Storage settings saved successfully');
+      } catch (e) {
+        err(e.message || 'Failed to save settings');
+      } finally {
+        setSavingSettings(false);
       }
     };
 
@@ -195,9 +216,12 @@
     const totalUsedBytes = buckets.reduce((acc, b) => acc + (b.used_bytes || 0), 0);
     const totalUsedMb = (totalUsedBytes / (1024 * 1024)).toFixed(2);
 
-    // Endpoint URLs: HTTP on 9000 vs HTTPS SSL on HostPanel port
-    const s3HttpEndpoint = 'http://' + window.location.hostname + ':9000';
-    const s3HttpsEndpoint = window.location.protocol + '//' + window.location.hostname + (window.location.port ? ':' + window.location.port : '') + '/cpanelapi/storage/s3';
+    // Direct HTTP Bind & Configured Reverse Proxy Domain
+    const directHttpEndpoint = 'http://0.0.0.0:9000';
+    const activeDomain = settings?.s3_domain ? settings.s3_domain.trim() : '';
+    const publicS3Endpoint = activeDomain
+      ? (activeDomain.startsWith('http://') || activeDomain.startsWith('https://') ? activeDomain : `https://${activeDomain}`)
+      : directHttpEndpoint;
 
     const renderGuideContent = () => {
       const sampleKey = selectedGuideKey || 'YOUR_ACCESS_KEY_ID';
@@ -208,22 +232,19 @@ aws configure set aws_access_key_id ${sampleKey}
 aws configure set aws_secret_access_key YOUR_SECRET_ACCESS_KEY
 aws configure set default.region us-east-1
 
-# List Buckets (HTTP Port 9000)
-aws s3 ls --endpoint-url ${s3HttpEndpoint}
-
-# List Buckets (HTTPS SSL Port)
-aws s3 ls --endpoint-url ${s3HttpsEndpoint}
+# List Buckets (S3 Endpoint)
+aws s3 ls --endpoint-url ${publicS3Endpoint}
 
 # Upload File to Bucket
-aws s3 cp myfile.txt s3://my-bucket/ --endpoint-url ${s3HttpEndpoint}`;
+aws s3 cp myfile.txt s3://my-bucket/ --endpoint-url ${publicS3Endpoint}`;
       }
       if (guideTool === 'python') {
         return `import boto3
 
-# Initialize S3 Client (HTTPS SSL)
+# Initialize S3 Client
 s3 = boto3.client(
     's3',
-    endpoint_url='${s3HttpsEndpoint}',
+    endpoint_url='${publicS3Endpoint}',
     aws_access_key_id='${sampleKey}',
     aws_secret_access_key='YOUR_SECRET_ACCESS_KEY',
     region_name='us-east-1'
@@ -245,7 +266,7 @@ for obj in response.get('Contents', []):
 import { readFileSync } from "fs";
 
 const s3 = new S3Client({
-  endpoint: "${s3HttpsEndpoint}",
+  endpoint: "${publicS3Endpoint}",
   region: "us-east-1",
   credentials: {
     accessKeyId: "${sampleKey}",
@@ -275,7 +296,7 @@ console.log(data.Contents);`;
         'secret' => env('AWS_SECRET_ACCESS_KEY', 'YOUR_SECRET_ACCESS_KEY'),
         'region' => 'us-east-1',
         'bucket' => env('AWS_BUCKET', 'my-bucket'),
-        'endpoint' => '${s3HttpsEndpoint}',
+        'endpoint' => '${publicS3Endpoint}',
         'use_path_style_endpoint' => true,
     ],
 ],
@@ -292,7 +313,7 @@ provider = Minio
 env_auth = false
 access_key_id = ${sampleKey}
 secret_access_key = YOUR_SECRET_ACCESS_KEY
-endpoint = ${s3HttpEndpoint}
+endpoint = ${publicS3Endpoint}
 
 # Rclone commands:
 rclone ls hostpanel-s3:my-bucket
@@ -334,9 +355,11 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
           </div>
 
           <div class="card" style=${{ padding: 16 }}>
-            <div class="card-title">S3 API Endpoint (HTTP / HTTPS)</div>
-            <div style=${{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--ok)', marginTop: 6, wordBreak: 'break-all' }}>HTTP: ${s3HttpEndpoint}</div>
-            <div style=${{ fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--accent)', marginTop: 2, wordBreak: 'break-all' }}>HTTPS: ${s3HttpsEndpoint}</div>
+            <div class="card-title">S3 Engine Direct Listen</div>
+            <div style=${{ fontSize: 13, fontFamily: 'var(--font-mono)', color: 'var(--ok)', marginTop: 6, wordBreak: 'break-all' }}>0.0.0.0:9000</div>
+            ${activeDomain && html`
+              <div style=${{ fontSize: 12, color: 'var(--accent)', marginTop: 4, wordBreak: 'break-all' }}>Proxy Domain: ${publicS3Endpoint}</div>
+            `}
           </div>
         </div>
 
@@ -528,11 +551,22 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
         ${activeTab === 'settings' && settings && html`
           <div class="card">
             <span class="card-title">Storage & Engine Configuration</span>
-            <div style=${{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 16 }}>
+            <form onSubmit=${handleSaveSettings} style=${{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 16 }}>
               <div class="field">
                 <label>Data Storage Path (Mount Location)</label>
                 <input type="text" value=${settings.storage_path} disabled />
                 <span class="page-desc">Data location configured on /data mount point: ${settings.storage_path}</span>
+              </div>
+
+              <div class="field">
+                <label>Custom S3 Reverse Proxy Domain (e.g. s3.consoleapi.in)</label>
+                <input
+                  type="text"
+                  placeholder="s3.yourdomain.com"
+                  value=${customDomainInput}
+                  onInput=${(e) => setCustomDomainInput(e.target.value)}
+                />
+                <span class="page-desc">When configured, code snippets and client SDKs will use your Nginx SSL reverse proxy domain pointing to 0.0.0.0:9000.</span>
               </div>
 
               <div style=${{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
@@ -549,7 +583,13 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
                   <input type="text" value=${`${settings.disk_free_mb} MB`} disabled />
                 </div>
               </div>
-            </div>
+
+              <div style=${{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
+                <button type="submit" class="btn btn-primary btn-sm" disabled=${savingSettings}>
+                  ${savingSettings ? 'Saving...' : 'Save Settings'}
+                </button>
+              </div>
+            </form>
           </div>
         `}
 
