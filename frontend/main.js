@@ -239,6 +239,24 @@
       }
     };
 
+    const handleToggleBucketAccess = async (targetBucket) => {
+      if (!targetBucket) return;
+      const isCurrentlyPublic = typeof targetBucket.public_access === 'boolean' ? targetBucket.public_access : (targetBucket.public_access === 'Public');
+      const nextAccess = !isCurrentlyPublic;
+      try {
+        const updated = await sdk.fetch('PUT', `/cpanelapi/storage/buckets/${targetBucket.name}`, {
+          public_access: nextAccess
+        });
+        ok(`Bucket '${targetBucket.name}' access set to ${nextAccess ? 'Public' : 'Private'}`);
+        if (selectedBucket && selectedBucket.name === targetBucket.name) {
+          setSelectedBucket(updated);
+        }
+        loadData();
+      } catch (e) {
+        err(e.message || 'Failed to update bucket access');
+      }
+    };
+
     const handleUploadObject = async (fileToUpload) => {
       const targetFile = fileToUpload || uploadFile;
       if (!targetFile || !selectedBucket) return;
@@ -565,12 +583,15 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
             <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
               <div>
                 <span class="card-title" style=${{ marginBottom: 0 }}>Bucket: ${selectedBucket.name}</span>
-                <span class=${`badge ${selectedBucket.public_access ? 'badge-warn' : 'badge-ok'}`} style=${{ marginLeft: 12 }}>
+                <span class=${`badge ${selectedBucket.public_access ? 'badge-warn' : 'badge-ok'}`} style=${{ marginLeft: 12, cursor: 'pointer' }} onClick=${() => handleToggleBucketAccess(selectedBucket)} title="Click to toggle Public / Private access">
                   ${selectedBucket.public_access ? 'Public' : 'Private'}
                 </span>
                 <p class="page-desc" style=${{ marginTop: 4 }}>Path: /data/storage/buckets/${selectedBucket.name}/</p>
               </div>
               <div style=${{ display: 'flex', gap: 8 }}>
+                <button class="btn btn-outline btn-sm" onClick=${() => handleToggleBucketAccess(selectedBucket)}>
+                  Make ${selectedBucket.public_access ? 'Private' : 'Public'}
+                </button>
                 <button class="btn btn-ghost btn-sm" onClick=${() => setSelectedBucket(null)}>Close Browser</button>
               </div>
             </div>
@@ -692,6 +713,9 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
               renderActions=${(row) => html`
                 <div style=${{ display: 'flex', gap: 6 }}>
                   <button class="btn btn-primary btn-sm" onClick=${() => openBucketBrowser(row)}>Browse</button>
+                  <button class="btn btn-outline btn-sm" onClick=${() => handleToggleBucketAccess(row)}>
+                    Make ${row.public_access === 'Public' ? 'Private' : 'Public'}
+                  </button>
                   <button class="btn btn-danger btn-sm" onClick=${() => setDeleteTarget({ type: 'bucket', item: row })}>Delete</button>
                 </div>
               `}
