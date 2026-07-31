@@ -298,12 +298,9 @@ async def get_active_presigned_url(
             conn.execute("UPDATE storage_presigned_urls SET status = 'expired' WHERE id = ?", (record["id"],))
             return None
 
-        s3_domain = get_storage_setting("s3_domain", "s3.consoleapi.in").strip()
-        if s3_domain:
-            domain_prefix = s3_domain if (s3_domain.startswith("http://") or s3_domain.startswith("https://")) else f"https://{s3_domain}"
-            url = f"{domain_prefix}/{bucket_name}/{object_key}?token={record['token']}"
-        else:
-            url = f"/cpanelapi/storage/buckets/{bucket_name}/objects/public/{object_key}?token={record['token']}"
+        s3_domain = get_storage_setting("s3_domain", "s3.consoleapi.in").strip() or "s3.consoleapi.in"
+        domain_prefix = s3_domain if (s3_domain.startswith("http://") or s3_domain.startswith("https://")) else f"https://{s3_domain}"
+        url = f"{domain_prefix}/{bucket_name}/{object_key}?token={record['token']}"
 
         record["url"] = url
         record["is_never"] = (exp == 0)
@@ -339,12 +336,9 @@ async def create_presigned_url(
         )
         row_id = cur.lastrowid
 
-    s3_domain = get_storage_setting("s3_domain", "s3.consoleapi.in").strip()
-    if s3_domain:
-        domain_prefix = s3_domain if (s3_domain.startswith("http://") or s3_domain.startswith("https://")) else f"https://{s3_domain}"
-        url = f"{domain_prefix}/{bucket_name}/{request.object_key}?token={token}"
-    else:
-        url = f"/cpanelapi/storage/buckets/{bucket_name}/objects/public/{request.object_key}?token={token}"
+    s3_domain = get_storage_setting("s3_domain", "s3.consoleapi.in").strip() or "s3.consoleapi.in"
+    domain_prefix = s3_domain if (s3_domain.startswith("http://") or s3_domain.startswith("https://")) else f"https://{s3_domain}"
+    url = f"{domain_prefix}/{bucket_name}/{request.object_key}?token={token}"
 
     log_action(current_user.username, "storage.presign_create", f"{bucket_name}/{request.object_key}", f"id={row_id}")
     return {

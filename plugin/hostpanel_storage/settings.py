@@ -92,7 +92,9 @@ def get_storage_setting(key: str, default: str = "") -> str:
     try:
         with get_conn() as conn:
             row = conn.execute("SELECT value FROM storage_settings WHERE key = ?", (key,)).fetchone()
-            return row["value"] if row else default
+            if row and row["value"] and row["value"].strip():
+                return row["value"].strip()
+            return default
     except Exception:
         return default
 
