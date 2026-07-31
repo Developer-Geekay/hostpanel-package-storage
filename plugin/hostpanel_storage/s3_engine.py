@@ -6,7 +6,7 @@ import mimetypes
 import logging
 import xml.etree.ElementTree as ET
 from typing import Optional
-from fastapi import APIRouter, Request, Response, HTTPException
+from fastapi import FastAPI, APIRouter, Request, Response, HTTPException
 from fastapi.responses import FileResponse, Response
 
 from hostpanel_storage.settings import get_bucket_path, get_data_path, ensure_data_dir
@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 # Public S3 REST API router mounted without panel user session dependency
 public_s3_router = APIRouter(prefix="", tags=["S3 Protocol API"])
+
+# Standalone ASGI FastAPI application instance for Uvicorn daemon
+s3_app = FastAPI(title="HostPanel S3 Engine", docs_url=None, redoc_url=None)
+s3_app.include_router(public_s3_router)
 
 
 def xml_response(content: str, status_code: int = 200) -> Response:
