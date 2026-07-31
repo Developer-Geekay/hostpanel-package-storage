@@ -2,6 +2,7 @@ import os
 import hmac
 import hashlib
 import time
+import secrets
 import mimetypes
 import logging
 from typing import List, Optional
@@ -32,13 +33,17 @@ class ObjectInfo(BaseModel):
 class PresignRequest(BaseModel):
     object_key: str
     method: str = "GET"  # "GET" or "PUT"
-    expires_in: int = 3600  # seconds
+    expires_in: int = 3600  # 0 means Never Expire
 
 
 class PresignResponse(BaseModel):
+    id: int
     url: str
+    token: str
     expires_at: int
+    is_never: bool
     object_key: str
+    status: str
 
 
 def format_size(bytes_num: int) -> str:
@@ -258,7 +263,47 @@ async def delete_object(
     return {"message": f"Object '{object_key}' deleted from bucket '{bucket_name}'"}
 
 
-@router.post("/presign", response_model=PresignResponse)
+@router.get("/presign/active")
+async def get_active_presigned_url(
+    bucket_name: str,
+    object_key: str = Query(...),
+    current_user: User = Depends(get_current_user)
+):
+    bucket = get_bucket_record(bucket_name)
+    validate_bucket_ownership(current_user, bucket)
+
+    from db import get_conn
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT * FROM storage_presigned_urls
+               WHERE bucket_name = ? AND object_key = ? AND status = 'active'
+               ORDER BY id DESC LIMIT 1""",
+            (bucket_name, object_key)
+        ).fetchone()
+
+        if not row:
+            return None
+
+        record = dict(row)
+
+        exp = record["expires_at"]
+        if exp > 0 and time.time() > exp:
+            conn.execute("UPDATE storage_presigned_urls SET status = 'expired' WHERE id = ?", (record["id"],))
+            return None
+
+        s3_domain = get_storage_setting("s3_domain", "s3.consoleapi.in").strip()
+        if s3_domain:
+            domain_prefix = s3_domain if (s3_domain.startswith("http://") or s3_domain.startswith("https://")) else f"https://{s3_domain}"
+            url = f"{domain_prefix}/{bucket_name}/{object_key}?token={record['token']}"
+        else:
+            url = f"/cpanelapi/storage/buckets/{bucket_name}/objects/public/{object_key}?token={record['token']}"
+
+        record["url"] = url
+        record["is_never"] = (exp == 0)
+        return record
+
+
+@router.post("/presign")
 async def create_presigned_url(
     bucket_name: str,
     request: PresignRequest,
@@ -270,24 +315,64 @@ async def create_presigned_url(
     b_path = get_bucket_path(bucket_name, bucket.get("custom_path"))
     safe_object_path(b_path, request.object_key)
 
-    expires_at = int(time.time()) + request.expires_in
-    message = f"{bucket_name}:{request.object_key}:{expires_at}:{request.method.upper()}"
-    secret_key = os.environ.get("JWT_SECRET", "hostpanel-storage-secret-key-change-me")
-    signature = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+    expires_at = (int(time.time()) + request.expires_in) if request.expires_in > 0 else 0
+    token = f"ps_{secrets.token_hex(16)}"
 
-    s3_domain = get_storage_setting("s3_domain", "").strip()
+    from db import get_conn
+    with get_conn() as conn:
+        # Revoke existing active URLs for this object
+        conn.execute(
+            "UPDATE storage_presigned_urls SET status = 'revoked' WHERE bucket_name = ? AND object_key = ? AND status = 'active'",
+            (bucket_name, request.object_key)
+        )
+        cur = conn.execute(
+            """INSERT INTO storage_presigned_urls (bucket_name, object_key, token, expires_at, status, created_by)
+               VALUES (?, ?, ?, ?, 'active', ?)""",
+            (bucket_name, request.object_key, token, expires_at, current_user.username)
+        )
+        row_id = cur.lastrowid
+
+    s3_domain = get_storage_setting("s3_domain", "s3.consoleapi.in").strip()
     if s3_domain:
         domain_prefix = s3_domain if (s3_domain.startswith("http://") or s3_domain.startswith("https://")) else f"https://{s3_domain}"
-        url = f"{domain_prefix}/{bucket_name}/{request.object_key}?expires={expires_at}&sig={signature}"
+        url = f"{domain_prefix}/{bucket_name}/{request.object_key}?token={token}"
     else:
-        url = f"/cpanelapi/storage/buckets/{bucket_name}/objects/public/{request.object_key}?expires={expires_at}&sig={signature}"
-    return PresignResponse(url=url, expires_at=expires_at, object_key=request.object_key)
+        url = f"/cpanelapi/storage/buckets/{bucket_name}/objects/public/{request.object_key}?token={token}"
+
+    log_action(current_user.username, "storage.presign_create", f"{bucket_name}/{request.object_key}", f"id={row_id}")
+    return {
+        "id": row_id,
+        "url": url,
+        "token": token,
+        "expires_at": expires_at,
+        "is_never": (expires_at == 0),
+        "object_key": request.object_key,
+        "status": "active"
+    }
+
+
+@router.delete("/presign/{presign_id}")
+async def revoke_presigned_url(
+    bucket_name: str,
+    presign_id: int,
+    current_user: User = Depends(get_current_user)
+):
+    bucket = get_bucket_record(bucket_name)
+    validate_bucket_ownership(current_user, bucket)
+
+    from db import get_conn
+    with get_conn() as conn:
+        conn.execute("UPDATE storage_presigned_urls SET status = 'revoked' WHERE id = ? AND bucket_name = ?", (presign_id, bucket_name))
+
+    log_action(current_user.username, "storage.presign_revoke", f"{bucket_name}/presign_id={presign_id}")
+    return {"message": "Presigned URL revoked successfully"}
 
 
 @router.get("/public/{object_key:path}")
 async def serve_public_object(
     bucket_name: str,
     object_key: str,
+    token: Optional[str] = Query(None),
     expires: Optional[int] = Query(None),
     sig: Optional[str] = Query(None)
 ):
@@ -298,17 +383,30 @@ async def serve_public_object(
     if not os.path.exists(target_path) or os.path.isdir(target_path):
         raise HTTPException(status_code=404, detail="Object not found")
 
-    # Access check: 1. Presigned signature URL OR 2. Public Bucket
-    if expires and sig:
-        if time.time() > expires:
-            raise HTTPException(status_code=403, detail="Presigned URL has expired")
-        message = f"{bucket_name}:{object_key}:{expires}:GET"
-        secret_key = os.environ.get("JWT_SECRET", "hostpanel-storage-secret-key-change-me")
-        expected_sig = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(sig, expected_sig):
-            raise HTTPException(status_code=403, detail="Invalid presigned URL signature")
-    elif not bucket["public_access"]:
-        raise HTTPException(status_code=403, detail="Bucket access is private. Authentication required.")
+    is_authorized = False
+
+    # Check 1: Token verification from storage_presigned_urls
+    if token:
+        from db import get_conn
+        with get_conn() as conn:
+            p_row = conn.execute("SELECT * FROM storage_presigned_urls WHERE token = ? AND status = 'active'", (token,)).fetchone()
+            if p_row:
+                exp = p_row["expires_at"]
+                if exp == 0 or time.time() <= exp:
+                    is_authorized = True
+
+    # Check 2: Legacy sig/expires signature check
+    if not is_authorized and expires and sig:
+        if time.time() <= expires:
+            message = f"{bucket_name}:{object_key}:{expires}:GET"
+            secret_key = os.environ.get("JWT_SECRET", "hostpanel-storage-secret-key-change-me")
+            expected_sig = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(sig, expected_sig):
+                is_authorized = True
+
+    # Check 3: Bucket public access
+    if not is_authorized and not bucket["public_access"]:
+        raise HTTPException(status_code=403, detail="Access denied. Presigned URL is invalid, revoked, or expired.")
 
     content_type, _ = mimetypes.guess_type(target_path)
     return FileResponse(path=target_path, media_type=content_type or "application/octet-stream")

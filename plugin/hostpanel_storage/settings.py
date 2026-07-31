@@ -62,15 +62,29 @@ def init_storage_tables():
             value TEXT NOT NULL
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS storage_presigned_urls (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            bucket_name   TEXT NOT NULL,
+            object_key    TEXT NOT NULL,
+            token         TEXT UNIQUE NOT NULL,
+            expires_at    INTEGER NOT NULL DEFAULT 0,
+            status        TEXT NOT NULL DEFAULT 'active',
+            created_by    TEXT NOT NULL,
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+        """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_buckets_owner ON storage_buckets(owner);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_keys_owner ON storage_access_keys(owner);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_keys_access ON storage_access_keys(access_key);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_presigned_target ON storage_presigned_urls(bucket_name, object_key);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_presigned_token ON storage_presigned_urls(token);")
 
         # Insert default settings if missing
         conn.execute("INSERT OR IGNORE INTO storage_settings (key, value) VALUES ('storage_path', ?);", (DEFAULT_DATA_PATH,))
         conn.execute("INSERT OR IGNORE INTO storage_settings (key, value) VALUES ('s3_port', '9000');")
         conn.execute("INSERT OR IGNORE INTO storage_settings (key, value) VALUES ('s3_region', 'us-east-1');")
-        conn.execute("INSERT OR IGNORE INTO storage_settings (key, value) VALUES ('s3_domain', '');")
+        conn.execute("INSERT OR IGNORE INTO storage_settings (key, value) VALUES ('s3_domain', 's3.consoleapi.in');")
 
 
 def get_storage_setting(key: str, default: str = "") -> str:

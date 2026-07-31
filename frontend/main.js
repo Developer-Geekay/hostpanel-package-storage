@@ -90,7 +90,8 @@
     // Presign Modal State
     const [presignTarget, setPresignTarget] = useState(null);
     const [presignExpires, setPresignExpires] = useState(3600);
-    const [presignResultUrl, setPresignResultUrl] = useState('');
+    const [activePresignRecord, setActivePresignRecord] = useState(null);
+    const [presignLoading, setPresignLoading] = useState(false);
 
     const loadData = useCallback(async () => {
       setLoading(true);
@@ -191,6 +192,50 @@
         err(e.message || 'Failed to save settings');
       } finally {
         setSavingSettings(false);
+      }
+    };
+
+    const handleOpenPresignModal = async (row) => {
+      setPresignTarget(row);
+      setActivePresignRecord(null);
+      setPresignExpires(3600);
+      setPresignLoading(true);
+      try {
+        const res = await sdk.fetch('GET', `/cpanelapi/storage/buckets/${selectedBucket.name}/objects/presign/active?object_key=${encodeURIComponent(row.key)}`);
+        if (res && res.url) {
+          setActivePresignRecord(res);
+        }
+      } catch (e) {
+        console.log('No active presign record found');
+      } finally {
+        setPresignLoading(false);
+      }
+    };
+
+    const handleGeneratePresignedUrl = async (e) => {
+      e.preventDefault();
+      if (!presignTarget || !selectedBucket) return;
+      try {
+        const expIn = parseInt(presignExpires, 10);
+        const res = await sdk.fetch('POST', `/cpanelapi/storage/buckets/${selectedBucket.name}/objects/presign`, {
+          object_key: presignTarget.key,
+          expires_in: isNaN(expIn) ? 3600 : expIn,
+        });
+        setActivePresignRecord(res);
+        ok('Presigned URL generated successfully');
+      } catch (e) {
+        err(e.message || 'Failed to generate presigned URL');
+      }
+    };
+
+    const handleRevokePresignedUrl = async () => {
+      if (!activePresignRecord || !selectedBucket) return;
+      try {
+        await sdk.fetch('DELETE', `/cpanelapi/storage/buckets/${selectedBucket.name}/objects/presign/${activePresignRecord.id}`);
+        ok('Presigned URL revoked successfully');
+        setActivePresignRecord(null);
+      } catch (e) {
+        err(e.message || 'Failed to revoke presigned URL');
       }
     };
 
@@ -610,10 +655,10 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
               renderActions=${(row) => html`
                 <div style=${{ display: 'flex', gap: 6 }}>
                   ${!row.is_dir && html`
-                    <a class="btn btn-ghost btn-sm" href=${`/cpanelapi/storage/buckets/${selectedBucket.name}/objects/download/${encodeURIComponent(row.key)}`} download target="_blank">
+                    <a class="btn btn-ghost btn-sm" href=${`/cpanelapi/storage/buckets/${selectedBucket.name}/objects/download/${encodeURIComponent(row.key)}?token=${encodeURIComponent(findAuthToken())}`} download target="_blank">
                       Download
                     </a>
-                    <button class="btn btn-outline btn-sm" onClick=${() => { setPresignTarget(row); setPresignResultUrl(''); }}>Presign</button>
+                    <button class="btn btn-outline btn-sm" onClick=${() => handleOpenPresignModal(row)}>Presign</button>
                   `}
                   <button class="btn btn-danger btn-sm" onClick=${() => setDeleteTarget({ type: 'object', item: row })}>Delete</button>
                 </div>
@@ -858,33 +903,62 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
         <!-- Presign Modal -->
         ${presignTarget && html`
           <div class="modal-overlay" onClick=${e => e.target === e.currentTarget && setPresignTarget(null)}>
-            <div class="modal animate-fade-in" style=${{ width: 500 }}>
+            <div class="modal animate-fade-in" style=${{ width: 540 }}>
               <div class="modal-header">
-                <span class="modal-title">Generate Presigned URL</span>
+                <span class="modal-title">Presigned Public URL</span>
                 <button class="modal-close" onClick=${() => setPresignTarget(null)}>x</button>
               </div>
-              <form onSubmit=${handleGeneratePresignedUrl}>
-                <div class="modal-body" style=${{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  <div class="field">
-                    <label>Object Key</label>
-                    <input type="text" value=${presignTarget.key} disabled />
-                  </div>
-                  <div class="field">
-                    <label>Expiration Time (Seconds)</label>
-                    <input type="number" value=${presignExpires} onInput=${e => setPresignExpires(e.target.value)} required />
-                  </div>
-                  ${presignResultUrl && html`
-                    <div class="field">
-                      <label>Generated URL</label>
-                      <textarea rows="3" readonly style=${{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>${presignResultUrl}</textarea>
+              <div class="modal-body" style=${{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div class="field">
+                  <label>Object Key</label>
+                  <input type="text" value=${presignTarget.key} disabled style=${{ fontFamily: 'var(--font-mono)' }} />
+                </div>
+
+                ${presignLoading ? html`
+                  <div style=${{ padding: '20px', textAlign: 'center', color: 'var(--text-3)' }}>Checking active presigned URLs...</div>
+                ` : activePresignRecord ? html`
+                  <div style=${{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14, background: '#0a0b0e', border: '1px solid var(--green-border)', borderRadius: 10 }}>
+                    <div style=${{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span class="chip chip-green" style=${{ fontSize: 10 }}>Active Presigned URL</span>
+                      <span style=${{ fontSize: 11, color: 'var(--text-3)' }}>
+                        ${activePresignRecord.is_never ? 'Never Expires (Unlimited)' : `Expires: ${new Date(activePresignRecord.expires_at * 1000).toLocaleString()}`}
+                      </span>
                     </div>
-                  `}
-                </div>
-                <div class="modal-footer">
-                  <button type="button" class="btn btn-ghost btn-sm" onClick=${() => setPresignTarget(null)}>Close</button>
-                  <button type="submit" class="btn btn-primary btn-sm">Generate URL</button>
-                </div>
-              </form>
+                    <div class="field">
+                      <label style=${{ fontSize: 11, color: 'var(--text-3)' }}>Public URL</label>
+                      <textarea rows="3" readonly style=${{ fontFamily: 'var(--font-mono)', fontSize: 11.5, background: '#040507', color: 'var(--green)' }}>${activePresignRecord.url}</textarea>
+                    </div>
+                    <div style=${{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button type="button" class="btn btn-ghost btn-sm" onClick=${() => { navigator.clipboard.writeText(activePresignRecord.url); ok('URL copied to clipboard'); }}>
+                        Copy Link
+                      </button>
+                      <button type="button" class="btn btn-danger btn-sm" onClick=${handleRevokePresignedUrl}>
+                        Revoke / Delete Link
+                      </button>
+                    </div>
+                  </div>
+                ` : html`
+                  <form onSubmit=${handleGeneratePresignedUrl} style=${{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    <div class="field">
+                      <label>Expiration Duration</label>
+                      <select value=${presignExpires} onChange=${e => setPresignExpires(e.target.value)} class="select" style=${{ width: '100%' }}>
+                        <option value="3600">1 Hour (3600s)</option>
+                        <option value="86400">1 Day (86400s)</option>
+                        <option value="604800">7 Days (604800s)</option>
+                        <option value="2592000">30 Days (2592000s)</option>
+                        <option value="0">Never Expire (Unlimited)</option>
+                      </select>
+                    </div>
+                    <div style=${{ fontSize: 11.5, color: 'var(--text-3)' }}>
+                      Generating a presigned URL creates a public link. Only 1 active presigned URL is allowed per object. You can revoke it anytime.
+                    </div>
+                    <div class="modal-footer" style=${{ padding: '12px 0 0', borderTop: 'none' }}>
+                      <button type="button" class="btn btn-ghost btn-sm" onClick=${() => setPresignTarget(null)}>Cancel</button>
+                      <button type="submit" class="btn btn-primary btn-sm">Generate URL</button>
+                    </div>
+                  </form>
+                `}
+              </div>
             </div>
           </div>
         `}
