@@ -6,6 +6,15 @@
   const { SdkDataTable, SdkConfirmModal } = sdk.components;
   const { useToast } = sdk.hooks;
 
+  function formatBytes(bytes, decimals = 2) {
+    if (!bytes || bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+  }
+
   function StoragePlugin() {
     const { ok, err } = useToast();
     const [activeTab, setActiveTab] = useState('buckets'); // 'buckets', 'keys', 'guide', 'settings'
@@ -33,8 +42,12 @@
     const [objects, setObjects] = useState([]);
     const [objectsLoading, setObjectsLoading] = useState(false);
     const [currentPrefix, setCurrentPrefix] = useState('');
+
+    // Upload & Drag-and-Drop State
     const [uploadFile, setUploadFile] = useState(null);
     const [uploading, setUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [isDragging, setIsDragging] = useState(false);
 
     // Delete Confirmation State
     const [deleteTarget, setDeleteTarget] = useState(null);
@@ -85,6 +98,8 @@
 
     const openBucketBrowser = (bucket) => {
       setSelectedBucket(bucket);
+      setUploadFile(null);
+      setUploadProgress(0);
       loadBucketObjects(bucket.name, '');
     };
 
@@ -144,35 +159,82 @@
       }
     };
 
-    const handleUploadObject = async (e) => {
-      e.preventDefault();
-      if (!uploadFile || !selectedBucket) return;
+    const handleUploadObject = (fileToUpload) => {
+      const targetFile = fileToUpload || uploadFile;
+      if (!targetFile || !selectedBucket) return;
+
       setUploading(true);
-      try {
-        const formData = new FormData();
-        const objectKey = currentPrefix ? `${currentPrefix}${uploadFile.name}` : uploadFile.name;
-        formData.append('key', objectKey);
-        formData.append('file', uploadFile);
+      setUploadProgress(0);
 
-        const token = localStorage.getItem('token');
-        const response = await fetch(`/cpanelapi/storage/buckets/${selectedBucket.name}/objects/upload`, {
-          method: 'POST',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-          body: formData,
-        });
+      const formData = new FormData();
+      const objectKey = currentPrefix ? `${currentPrefix}${targetFile.name}` : targetFile.name;
+      formData.append('key', objectKey);
+      formData.append('file', targetFile);
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.detail || 'Upload failed');
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `/cpanelapi/storage/buckets/${selectedBucket.name}/objects/upload`);
+      xhr.withCredentials = true;
+
+      // Check all potential token locations (SDK token, localStorage, cookies)
+      const token = sdk?.token ||
+        localStorage.getItem('token') ||
+        localStorage.getItem('hp_token') ||
+        localStorage.getItem('access_token') ||
+        (document.cookie.match(/(?:^|;\s*)(?:token|hp_token|jwt)=([^;]*)/) || [])[1];
+
+      if (token) {
+        const cleanToken = token.replace(/^Bearer\s+/i, '');
+        xhr.setRequestHeader('Authorization', `Bearer ${cleanToken}`);
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100);
+          setUploadProgress(percent);
         }
+      };
 
-        ok(`Uploaded ${uploadFile.name}`);
-        setUploadFile(null);
-        loadBucketObjects(selectedBucket.name, currentPrefix);
-      } catch (e) {
-        err(e.message || 'Failed to upload object');
-      } finally {
+      xhr.onload = () => {
         setUploading(false);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          ok(`Uploaded ${targetFile.name}`);
+          setUploadFile(null);
+          setUploadProgress(0);
+          loadBucketObjects(selectedBucket.name, currentPrefix);
+        } else {
+          try {
+            const errJson = JSON.parse(xhr.responseText);
+            err(errJson.detail || 'Upload failed');
+          } catch (ex) {
+            err(`Upload failed with status ${xhr.status}`);
+          }
+        }
+      };
+
+      xhr.onerror = () => {
+        setUploading(false);
+        err('Network error during upload');
+      };
+
+      xhr.send(formData);
+    };
+
+    const handleDragOver = (e) => {
+      e.preventDefault();
+      setIsDragging(true);
+    };
+
+    const handleDragLeave = (e) => {
+      e.preventDefault();
+      setIsDragging(false);
+    };
+
+    const handleDrop = (e) => {
+      e.preventDefault();
+      setIsDragging(false);
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+        const droppedFile = e.dataTransfer.files[0];
+        setUploadFile(droppedFile);
       }
     };
 
@@ -216,7 +278,6 @@
     const totalUsedBytes = buckets.reduce((acc, b) => acc + (b.used_bytes || 0), 0);
     const totalUsedMb = (totalUsedBytes / (1024 * 1024)).toFixed(2);
 
-    // Direct HTTP Bind & Configured Reverse Proxy Domain
     const directHttpEndpoint = 'http://0.0.0.0:9000';
     const activeDomain = settings?.s3_domain ? settings.s3_domain.trim() : '';
     const publicS3Endpoint = activeDomain
@@ -413,13 +474,71 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
               </div>
             </div>
 
-            <!-- Upload Object Bar -->
-            <form onSubmit=${handleUploadObject} style=${{ display: 'flex', gap: 12, alignItems: 'center', background: 'var(--bg-3)', padding: 12, borderRadius: 'var(--radius-sm)', marginBottom: 16 }}>
-              <input type="file" onChange=${(e) => setUploadFile(e.target.files[0])} style=${{ flex: 1 }} />
-              <button type="submit" class="btn btn-primary btn-sm" disabled=${!uploadFile || uploading}>
-                ${uploading ? 'Uploading...' : 'Upload File'}
-              </button>
-            </form>
+            <!-- Modern Drag & Drop Upload Zone -->
+            <div
+              style=${{
+                border: `2px dashed ${isDragging ? 'var(--accent)' : 'var(--border)'}`,
+                borderRadius: 'var(--radius-md, 8px)',
+                padding: '24px 20px',
+                textAlign: 'center',
+                background: isDragging ? 'var(--bg-hover)' : 'var(--bg-3)',
+                transition: 'all 0.2s ease',
+                marginBottom: 20,
+                position: 'relative'
+              }}
+              onDragOver=${handleDragOver}
+              onDragLeave=${handleDragLeave}
+              onDrop=${handleDrop}
+            >
+              ${!uploadFile ? html`
+                <div style=${{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                  <div style=${{ fontSize: 28, color: 'var(--accent)' }}>☁️</div>
+                  <div style=${{ fontSize: 14, fontWeight: 500, color: 'var(--text)' }}>
+                    Drag & drop file here, or <label style=${{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline', margin: 0 }}>browse<input type="file" style=${{ display: 'none' }} onChange=${(e) => e.target.files && e.target.files[0] && setUploadFile(e.target.files[0])} /></label>
+                  </div>
+                  <span class="page-desc">Upload files up to bucket quota capacity (${selectedBucket.quota_mb} MB)</span>
+                </div>
+              ` : html`
+                <div style=${{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                  <div style=${{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--bg-card)', padding: '10px 16px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', maxWidth: '100%', width: '400px' }}>
+                    <span style=${{ fontSize: 24 }}>📄</span>
+                    <div style=${{ flex: 1, textAlign: 'left', overflow: 'hidden' }}>
+                      <div style=${{ fontSize: 13, fontWeight: 600, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>${uploadFile.name}</div>
+                      <div style=${{ fontSize: 11, color: 'var(--text-muted)' }}>${formatBytes(uploadFile.size)}</div>
+                    </div>
+                    ${!uploading && html`
+                      <button type="button" class="btn btn-ghost btn-sm" style=${{ padding: '2px 8px' }} onClick=${() => { setUploadFile(null); setUploadProgress(0); }}>✕</button>
+                    `}
+                  </div>
+
+                  <!-- Progress Bar -->
+                  ${uploading && html`
+                    <div style=${{ width: '100%', maxWidth: '400px' }}>
+                      <div style=${{ height: '8px', background: 'var(--bg-hover)', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div style=${{ width: `${uploadProgress}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.15s ease' }}></div>
+                      </div>
+                      <div style=${{ fontSize: 12, marginTop: 4, fontWeight: 600, color: 'var(--accent)' }}>
+                        ${uploadProgress}% Uploading...
+                      </div>
+                    </div>
+                  `}
+
+                  <div style=${{ display: 'flex', gap: 8, marginTop: 4 }}>
+                    <button
+                      type="button"
+                      class="btn btn-primary btn-sm"
+                      disabled=${uploading}
+                      onClick=${() => handleUploadObject(uploadFile)}
+                    >
+                      ${uploading ? `Uploading (${uploadProgress}%)` : 'Start Upload'}
+                    </button>
+                    ${!uploading && html`
+                      <button type="button" class="btn btn-ghost btn-sm" onClick=${() => setUploadFile(null)}>Cancel</button>
+                    `}
+                  </div>
+                </div>
+              `}
+            </div>
 
             <!-- Objects List Table -->
             <${SdkDataTable}
@@ -431,7 +550,7 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
               ]}
               rows=${objects}
               loading=${objectsLoading}
-              empty=${{ title: 'No objects found', desc: 'Upload a file or send S3 PUT requests to fill this bucket.' }}
+              empty=${{ title: 'No objects found', desc: 'Upload a file using the dropzone above or send S3 PUT requests to fill this bucket.' }}
               renderActions=${(row) => html`
                 <div style=${{ display: 'flex', gap: 6 }}>
                   ${!row.is_dir && html`
