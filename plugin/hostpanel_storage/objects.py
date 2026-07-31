@@ -149,6 +149,7 @@ async def list_objects(
 async def upload_object(
     bucket_name: str,
     key: Optional[str] = Form(None),
+    use_uuid: Optional[bool] = Form(False),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
@@ -156,8 +157,14 @@ async def upload_object(
         bucket = get_bucket_record(bucket_name)
         validate_bucket_ownership(current_user, bucket)
 
-        raw_name = (key or file.filename or "file").strip()
-        object_key = raw_name.lstrip("/") if raw_name else "file"
+        if use_uuid or key == "auto_uuid":
+            import uuid
+            ext = os.path.splitext(file.filename or "")[1]
+            object_key = f"{uuid.uuid4()}{ext}"
+        else:
+            raw_name = (key or file.filename or "file").strip()
+            object_key = raw_name.lstrip("/") if raw_name else "file"
+
         b_path = get_bucket_path(bucket_name, bucket.get("custom_path"))
         target_path = safe_object_path(b_path, object_key)
 

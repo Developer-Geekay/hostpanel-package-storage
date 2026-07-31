@@ -83,6 +83,7 @@
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isDragging, setIsDragging] = useState(false);
+    const [useUuidKey, setUseUuidKey] = useState(false);
 
     // Delete Confirmation State
     const [deleteTarget, setDeleteTarget] = useState(null);
@@ -265,8 +266,12 @@
       setUploadProgress(0);
 
       const formData = new FormData();
-      const objectKey = currentPrefix ? `${currentPrefix}${targetFile.name}` : targetFile.name;
-      formData.append('key', objectKey);
+      if (useUuidKey) {
+        formData.append('use_uuid', 'true');
+      } else {
+        const objectKey = currentPrefix ? `${currentPrefix}${targetFile.name}` : targetFile.name;
+        formData.append('key', objectKey);
+      }
       formData.append('file', targetFile);
 
       const token = findAuthToken();
@@ -619,6 +624,10 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
                     Drag & drop file here, or <label style=${{ color: 'var(--accent)', cursor: 'pointer', textDecoration: 'underline', margin: 0 }}>browse<input type="file" style=${{ display: 'none' }} onChange=${(e) => e.target.files && e.target.files[0] && setUploadFile(e.target.files[0])} /></label>
                   </div>
                   <span class="page-desc">Upload files up to bucket quota capacity (${selectedBucket.quota_mb} MB)</span>
+                  <label style=${{ fontSize: 11.5, color: 'var(--text-3)', display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 4, cursor: 'pointer' }}>
+                    <input type="checkbox" checked=${useUuidKey} onChange=${(e) => setUseUuidKey(e.target.checked)} />
+                    Generate Unique UUID for Object Keys (prevents name collisions)
+                  </label>
                 </div>
               ` : html`
                 <div style=${{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
