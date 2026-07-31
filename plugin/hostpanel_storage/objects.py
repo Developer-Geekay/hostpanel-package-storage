@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from deps import get_current_user
 from auth import User
 from modules.audit.logger import log_action
-from hostpanel_storage.settings import get_bucket_path, ensure_data_dir
+from hostpanel_storage.settings import get_bucket_path, ensure_data_dir, get_storage_setting
 from hostpanel_storage.buckets import get_dir_stats, validate_bucket_ownership
 
 logger = logging.getLogger(__name__)
@@ -275,7 +275,12 @@ async def create_presigned_url(
     secret_key = os.environ.get("JWT_SECRET", "hostpanel-storage-secret-key-change-me")
     signature = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    url = f"/cpanelapi/storage/buckets/{bucket_name}/objects/public/{request.object_key}?expires={expires_at}&sig={signature}"
+    s3_domain = get_storage_setting("s3_domain", "").strip()
+    if s3_domain:
+        domain_prefix = s3_domain if (s3_domain.startswith("http://") or s3_domain.startswith("https://")) else f"https://{s3_domain}"
+        url = f"{domain_prefix}/{bucket_name}/{request.object_key}?expires={expires_at}&sig={signature}"
+    else:
+        url = f"/cpanelapi/storage/buckets/{bucket_name}/objects/public/{request.object_key}?expires={expires_at}&sig={signature}"
     return PresignResponse(url=url, expires_at=expires_at, object_key=request.object_key)
 
 

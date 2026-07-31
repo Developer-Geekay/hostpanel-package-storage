@@ -9,13 +9,13 @@ from typing import Optional
 from fastapi import APIRouter, Request, Response, HTTPException
 from fastapi.responses import FileResponse, Response
 
-from hostpanel_storage.settings import get_bucket_path, get_data_path
+from hostpanel_storage.settings import get_bucket_path, get_data_path, ensure_data_dir
 from hostpanel_storage.buckets import get_dir_stats
 
 logger = logging.getLogger(__name__)
 
 # Public S3 REST API router mounted without panel user session dependency
-public_s3_router = APIRouter(prefix="/cpanelapi/storage/s3", tags=["S3 Protocol API"])
+public_s3_router = APIRouter(prefix="", tags=["S3 Protocol API"])
 
 
 def xml_response(content: str, status_code: int = 200) -> Response:
@@ -196,7 +196,7 @@ async def s3_put_object(bucket_name: str, object_key: str, req: Request):
     if not target.startswith(os.path.abspath(b_path)):
         return xml_response("<Error><Code>InvalidArgument</Code><Message>Invalid Key</Message></Error>", status_code=400)
 
-    os.makedirs(os.path.dirname(target), exist_ok=True)
+    ensure_data_dir(os.path.dirname(target))
     body = await req.body()
 
     # Check Quota
