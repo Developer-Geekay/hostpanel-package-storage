@@ -33,6 +33,7 @@ PLUGIN_MANIFEST = {
         "label":       "S3 Storage Daemon",
         "icon":        "cloud_queue",
         "can_reload":  True,
+        "config_path": "/opt/hostpanel/plugins/storage/conf/storage.conf",
     },
 }
 

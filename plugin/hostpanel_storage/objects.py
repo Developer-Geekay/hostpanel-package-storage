@@ -92,51 +92,50 @@ async def list_objects(
     items = []
     try:
         if delimiter == "/":
+            seen_dirs = set()
             with os.scandir(target_dir) as entries:
                 for entry in entries:
                     rel_path = os.path.relpath(entry.path, b_path).replace("\\", "/")
                     if entry.is_dir():
-                        items.append(ObjectInfo(
-                            key=rel_path + "/",
-                            size_bytes=0,
-                            size_formatted="--",
-                            last_modified="--",
-                            content_type="directory",
-                            is_dir=True
-                        ))
-                    elif entry.is_file():
+                        dir_key = rel_path + "/"
+                        if dir_key not in seen_dirs:
+                            seen_dirs.add(dir_key)
+                            items.append(ObjectInfo(
+                                key=dir_key,
+                                size_bytes=0,
+                                size_formatted="0 B",
+                                last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(entry.stat().st_mtime)),
+                                content_type="directory",
+                                is_dir=True
+                            ))
+                    else:
                         stat = entry.stat()
-                        mtime = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stat.st_mtime))
-                        ctype, _ = mimetypes.guess_type(entry.name)
+                        content_type, _ = mimetypes.guess_type(entry.name)
                         items.append(ObjectInfo(
                             key=rel_path,
                             size_bytes=stat.st_size,
                             size_formatted=format_size(stat.st_size),
-                            last_modified=mtime,
-                            content_type=ctype or "application/octet-stream",
+                            last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stat.st_mtime)),
+                            content_type=content_type or "application/octet-stream",
                             is_dir=False
                         ))
         else:
             for root, dirs, files in os.walk(target_dir):
-                for f in files:
-                    full_p = os.path.join(root, f)
-                    rel_p = os.path.relpath(full_p, b_path).replace("\\", "/")
-                    if prefix_clean and not rel_p.startswith(prefix_clean):
-                        continue
-                    stat = os.stat(full_p)
-                    mtime = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stat.st_mtime))
-                    ctype, _ = mimetypes.guess_type(f)
+                for file_name in files:
+                    full_path = os.path.join(root, file_name)
+                    rel_path = os.path.relpath(full_path, b_path).replace("\\", "/")
+                    stat = os.stat(full_path)
+                    content_type, _ = mimetypes.guess_type(file_name)
                     items.append(ObjectInfo(
-                        key=rel_p,
+                        key=rel_path,
                         size_bytes=stat.st_size,
                         size_formatted=format_size(stat.st_size),
-                        last_modified=mtime,
-                        content_type=ctype or "application/octet-stream",
+                        last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stat.st_mtime)),
+                        content_type=content_type or "application/octet-stream",
                         is_dir=False
                     ))
     except Exception as e:
-        logger.error(f"Failed to scan object list for {bucket_name}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to list bucket contents")
+        logger.error(f"Error scanning objects for bucket {bucket_name}: {e}")
 
     return items
 
@@ -148,45 +147,72 @@ async def upload_object(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
-    bucket = get_bucket_record(bucket_name)
-    validate_bucket_ownership(current_user, bucket)
+    try:
+        bucket = get_bucket_record(bucket_name)
+        validate_bucket_ownership(current_user, bucket)
 
-    object_key = (key or file.filename or "file").lstrip("/")
-    b_path = get_bucket_path(bucket_name, bucket.get("custom_path"))
-    target_path = safe_object_path(b_path, object_key)
+        raw_name = (key or file.filename or "file").strip()
+        object_key = raw_name.lstrip("/") if raw_name else "file"
+        b_path = get_bucket_path(bucket_name, bucket.get("custom_path"))
+        target_path = safe_object_path(b_path, object_key)
 
-    # Check Quota before upload
-    current_used, _ = get_dir_stats(b_path)
-    quota_bytes = bucket["quota_mb"] * 1024 * 1024
-    if current_used >= quota_bytes:
-        raise HTTPException(status_code=413, detail=f"Bucket quota of {bucket['quota_mb']} MB exceeded.")
+        current_used, _ = get_dir_stats(b_path)
+        quota_bytes = bucket["quota_mb"] * 1024 * 1024
+        if current_used >= quota_bytes:
+            raise HTTPException(status_code=413, detail=f"Bucket quota of {bucket['quota_mb']} MB exceeded.")
 
-    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        try:
+            os.makedirs(os.path.dirname(target_path), mode=0o755, exist_ok=True)
+        except PermissionError as pe:
+            logger.error(f"Permission denied creating target directory for {target_path}: {pe}")
+            raise HTTPException(status_code=500, detail=f"Permission denied creating target path: {os.path.dirname(target_path)}")
 
-    bytes_written = 0
-    with open(target_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):  # 1MB chunks
-            bytes_written += len(chunk)
-            if (current_used + bytes_written) > quota_bytes:
-                f.close()
-                if os.path.exists(target_path):
-                    os.remove(target_path)
-                raise HTTPException(status_code=413, detail="File upload exceeds bucket quota limit.")
-            f.write(chunk)
+        bytes_written = 0
+        try:
+            with open(target_path, "wb") as f:
+                while chunk := await file.read(1024 * 1024):
+                    bytes_written += len(chunk)
+                    if (current_used + bytes_written) > quota_bytes:
+                        f.close()
+                        if os.path.exists(target_path):
+                            os.remove(target_path)
+                        raise HTTPException(status_code=413, detail="File upload exceeds bucket quota limit.")
+                    f.write(chunk)
+        except PermissionError as pe:
+            logger.error(f"Permission denied opening file {target_path}: {pe}")
+            raise HTTPException(status_code=500, detail=f"Permission denied writing to file: {target_path}")
+        except HTTPException:
+            raise
+        except Exception as fe:
+            logger.error(f"File writing error for {target_path}: {fe}")
+            raise HTTPException(status_code=500, detail=f"Failed to write file to disk: {str(fe)}")
 
-    log_action(current_user.username, "storage.object_upload", f"{bucket_name}/{object_key}", f"size={bytes_written}")
+        try:
+            log_action(current_user.username, "storage.object_upload", f"{bucket_name}/{object_key}", f"size={bytes_written}")
+        except Exception as le:
+            logger.warning(f"Audit log action failed for upload: {le}")
 
-    return {
-        "bucket": bucket_name,
-        "key": object_key,
-        "size_bytes": bytes_written,
-        "size_formatted": format_size(bytes_written),
-        "status": "success"
-    }
+        return {
+            "bucket": bucket_name,
+            "key": object_key,
+            "size_bytes": bytes_written,
+            "size_formatted": format_size(bytes_written),
+            "status": "success"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Unexpected upload exception: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 
 @router.get("/download/{object_key:path}")
-async def download_object(bucket_name: str, object_key: str, current_user: User = Depends(get_current_user)):
+async def download_object(
+    bucket_name: str,
+    object_key: str,
+    token: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user)
+):
     bucket = get_bucket_record(bucket_name)
     validate_bucket_ownership(current_user, bucket)
 
@@ -196,17 +222,23 @@ async def download_object(bucket_name: str, object_key: str, current_user: User 
     if not os.path.exists(target_path) or os.path.isdir(target_path):
         raise HTTPException(status_code=404, detail="Object not found")
 
-    ctype, _ = mimetypes.guess_type(target_path)
+    content_type, _ = mimetypes.guess_type(target_path)
     filename = os.path.basename(target_path)
+
+    log_action(current_user.username, "storage.object_download", f"{bucket_name}/{object_key}")
     return FileResponse(
-        target_path,
-        media_type=ctype or "application/octet-stream",
-        filename=filename
+        path=target_path,
+        filename=filename,
+        media_type=content_type or "application/octet-stream"
     )
 
 
 @router.delete("/{object_key:path}")
-async def delete_object(bucket_name: str, object_key: str, current_user: User = Depends(get_current_user)):
+async def delete_object(
+    bucket_name: str,
+    object_key: str,
+    current_user: User = Depends(get_current_user)
+):
     bucket = get_bucket_record(bucket_name)
     validate_bucket_ownership(current_user, bucket)
 
@@ -216,88 +248,65 @@ async def delete_object(bucket_name: str, object_key: str, current_user: User = 
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="Object not found")
 
-    if os.path.isdir(target_path):
-        shutil.rmtree(target_path)
-    else:
-        os.remove(target_path)
+    try:
+        if os.path.isdir(target_path):
+            os.rmdir(target_path)
+        else:
+            os.remove(target_path)
+    except Exception as e:
+        logger.error(f"Failed to delete object {target_path}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete object: {e}")
 
     log_action(current_user.username, "storage.object_delete", f"{bucket_name}/{object_key}")
-    return {"message": f"Object '{object_key}' deleted from '{bucket_name}'"}
-
-
-# ── Presigned URLs & Public Links ─────────────────────────────────────────────
-
-PRESIGN_SECRET = "hp-s3-presign-secret-token-key-2026"
-
-
-def create_presigned_token(bucket_name: str, object_key: str, expires_at: int) -> str:
-    msg = f"{bucket_name}:{object_key}:{expires_at}".encode('utf-8')
-    return hmac.new(PRESIGN_SECRET.encode('utf-8'), msg, hashlib.sha256).hexdigest()
-
-
-def verify_presigned_token(bucket_name: str, object_key: str, expires_at: int, token: str) -> bool:
-    if time.time() > expires_at:
-        return False
-    expected = create_presigned_token(bucket_name, object_key, expires_at)
-    return hmac.compare_digest(expected, token)
+    return {"message": f"Object '{object_key}' deleted from bucket '{bucket_name}'"}
 
 
 @router.post("/presign", response_model=PresignResponse)
-async def generate_presigned_url(
+async def create_presigned_url(
     bucket_name: str,
-    payload: PresignRequest,
-    req: Request,
+    request: PresignRequest,
     current_user: User = Depends(get_current_user)
 ):
     bucket = get_bucket_record(bucket_name)
     validate_bucket_ownership(current_user, bucket)
 
-    expires_at = int(time.time()) + max(10, min(86400, payload.expires_in))
-    clean_key = payload.object_key.lstrip("/")
-    token = create_presigned_token(bucket_name, clean_key, expires_at)
-
-    base_url = str(req.base_url).rstrip("/")
-    presigned_url = f"{base_url}/cpanelapi/storage/buckets/{bucket_name}/objects/presigned/{clean_key}?expires={expires_at}&token={token}"
-
-    return PresignResponse(
-        url=presigned_url,
-        expires_at=expires_at,
-        object_key=clean_key
-    )
-
-
-@router.get("/presigned/{object_key:path}")
-async def access_presigned_object(
-    bucket_name: str,
-    object_key: str,
-    expires: int = Query(...),
-    token: str = Query(...)
-):
-    if not verify_presigned_token(bucket_name, object_key, expires, token):
-        raise HTTPException(status_code=403, detail="Presigned URL has expired or token signature is invalid")
-
-    bucket = get_bucket_record(bucket_name)
     b_path = get_bucket_path(bucket_name, bucket.get("custom_path"))
-    target_path = safe_object_path(b_path, object_key)
+    safe_object_path(b_path, request.object_key)
 
-    if not os.path.exists(target_path) or os.path.isdir(target_path):
-        raise HTTPException(status_code=404, detail="Object not found")
+    expires_at = int(time.time()) + request.expires_in
+    message = f"{bucket_name}:{request.object_key}:{expires_at}:{request.method.upper()}"
+    secret_key = os.environ.get("JWT_SECRET", "hostpanel-storage-secret-key-change-me")
+    signature = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    ctype, _ = mimetypes.guess_type(target_path)
-    return FileResponse(target_path, media_type=ctype or "application/octet-stream")
+    url = f"/cpanelapi/storage/buckets/{bucket_name}/objects/public/{request.object_key}?expires={expires_at}&sig={signature}"
+    return PresignResponse(url=url, expires_at=expires_at, object_key=request.object_key)
 
 
 @router.get("/public/{object_key:path}")
-async def access_public_object(bucket_name: str, object_key: str):
+async def serve_public_object(
+    bucket_name: str,
+    object_key: str,
+    expires: Optional[int] = Query(None),
+    sig: Optional[str] = Query(None)
+):
     bucket = get_bucket_record(bucket_name)
-    if not bucket["public_access"]:
-        raise HTTPException(status_code=403, detail="This bucket is private")
-
     b_path = get_bucket_path(bucket_name, bucket.get("custom_path"))
     target_path = safe_object_path(b_path, object_key)
 
     if not os.path.exists(target_path) or os.path.isdir(target_path):
         raise HTTPException(status_code=404, detail="Object not found")
 
-    ctype, _ = mimetypes.guess_type(target_path)
-    return FileResponse(target_path, media_type=ctype or "application/octet-stream")
+    # Access check: 1. Presigned signature URL OR 2. Public Bucket
+    if expires and sig:
+        if time.time() > expires:
+            raise HTTPException(status_code=403, detail="Presigned URL has expired")
+        message = f"{bucket_name}:{object_key}:{expires}:GET"
+        secret_key = os.environ.get("JWT_SECRET", "hostpanel-storage-secret-key-change-me")
+        expected_sig = hmac.new(secret_key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            raise HTTPException(status_code=403, detail="Invalid presigned URL signature")
+    elif not bucket["public_access"]:
+        raise HTTPException(status_code=403, detail="Bucket access is private. Authentication required.")
+
+    content_type, _ = mimetypes.guess_type(target_path)
+    return FileResponse(path=target_path, media_type=content_type or "application/octet-stream")
