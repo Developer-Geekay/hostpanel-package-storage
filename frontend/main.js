@@ -362,21 +362,6 @@
       }
     };
 
-    const handleGeneratePresignedUrl = async (e) => {
-      e.preventDefault();
-      if (!presignTarget || !selectedBucket) return;
-      try {
-        const res = await sdk.fetch('POST', `/cpanelapi/storage/buckets/${selectedBucket.name}/objects/presign`, {
-          object_key: presignTarget.key,
-          expires_in: parseInt(presignExpires, 10) || 3600,
-        });
-        setPresignResultUrl(res.url);
-        ok('Presigned URL generated');
-      } catch (e) {
-        err(e.message || 'Failed to generate presigned URL');
-      }
-    };
-
     const confirmDelete = async () => {
       if (!deleteTarget) return;
       try {
