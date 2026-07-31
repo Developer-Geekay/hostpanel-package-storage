@@ -15,6 +15,41 @@
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   }
 
+  function findAuthToken() {
+    let token = sdk?.token || (typeof sdk?.getToken === 'function' ? sdk.getToken() : null);
+
+    if (!token) {
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const val = localStorage.getItem(localStorage.key(i));
+          if (val && typeof val === 'string' && val.trim().startsWith('eyJ')) {
+            token = val.trim();
+            break;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!token) {
+      try {
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const val = sessionStorage.getItem(sessionStorage.key(i));
+          if (val && typeof val === 'string' && val.trim().startsWith('eyJ')) {
+            token = val.trim();
+            break;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!token) {
+      const match = document.cookie.match(/(?:^|;\s*)(?:token|hp_token|jwt|access_token)=([^;]*)/);
+      if (match) token = decodeURIComponent(match[1]);
+    }
+
+    return token ? token.replace(/^Bearer\s+/i, '') : '';
+  }
+
   function StoragePlugin() {
     const { ok, err } = useToast();
     const [activeTab, setActiveTab] = useState('buckets'); // 'buckets', 'keys', 'guide', 'settings'
@@ -159,7 +194,7 @@
       }
     };
 
-    const handleUploadObject = (fileToUpload) => {
+    const handleUploadObject = async (fileToUpload) => {
       const targetFile = fileToUpload || uploadFile;
       if (!targetFile || !selectedBucket) return;
 
@@ -171,20 +206,17 @@
       formData.append('key', objectKey);
       formData.append('file', targetFile);
 
+      const token = findAuthToken();
+      const queryParam = token ? `?token=${encodeURIComponent(token)}` : '';
+      const uploadUrl = `/cpanelapi/storage/buckets/${selectedBucket.name}/objects/upload${queryParam}`;
+
+      // Primary upload path: XMLHttpRequest for real-time progress bar
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', `/cpanelapi/storage/buckets/${selectedBucket.name}/objects/upload`);
+      xhr.open('POST', uploadUrl);
       xhr.withCredentials = true;
 
-      // Check all potential token locations (SDK token, localStorage, cookies)
-      const token = sdk?.token ||
-        localStorage.getItem('token') ||
-        localStorage.getItem('hp_token') ||
-        localStorage.getItem('access_token') ||
-        (document.cookie.match(/(?:^|;\s*)(?:token|hp_token|jwt)=([^;]*)/) || [])[1];
-
       if (token) {
-        const cleanToken = token.replace(/^Bearer\s+/i, '');
-        xhr.setRequestHeader('Authorization', `Bearer ${cleanToken}`);
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       }
 
       xhr.upload.onprogress = (event) => {
@@ -194,14 +226,28 @@
         }
       };
 
-      xhr.onload = () => {
-        setUploading(false);
+      xhr.onload = async () => {
         if (xhr.status >= 200 && xhr.status < 300) {
+          setUploading(false);
           ok(`Uploaded ${targetFile.name}`);
           setUploadFile(null);
           setUploadProgress(0);
           loadBucketObjects(selectedBucket.name, currentPrefix);
+        } else if (xhr.status === 401) {
+          // Fallback path: use sdk.fetch directly if XHR receives 401
+          try {
+            await sdk.fetch('POST', uploadUrl, formData);
+            ok(`Uploaded ${targetFile.name}`);
+            setUploadFile(null);
+            setUploadProgress(0);
+            loadBucketObjects(selectedBucket.name, currentPrefix);
+          } catch (fetchErr) {
+            err(fetchErr.message || 'Upload failed (401 Unauthorized)');
+          } finally {
+            setUploading(false);
+          }
         } else {
+          setUploading(false);
           try {
             const errJson = JSON.parse(xhr.responseText);
             err(errJson.detail || 'Upload failed');
@@ -211,9 +257,19 @@
         }
       };
 
-      xhr.onerror = () => {
-        setUploading(false);
-        err('Network error during upload');
+      xhr.onerror = async () => {
+        // Fallback to sdk.fetch on network error
+        try {
+          await sdk.fetch('POST', uploadUrl, formData);
+          ok(`Uploaded ${targetFile.name}`);
+          setUploadFile(null);
+          setUploadProgress(0);
+          loadBucketObjects(selectedBucket.name, currentPrefix);
+        } catch (fetchErr) {
+          err(fetchErr.message || 'Network error during upload');
+        } finally {
+          setUploading(false);
+        }
       };
 
       xhr.send(formData);
