@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from deps import get_current_user
 from auth import User
 from modules.audit.logger import log_action
-from hostpanel_storage.settings import get_bucket_path
+from hostpanel_storage.settings import get_bucket_path, ensure_data_dir
 from hostpanel_storage.buckets import get_dir_stats, validate_bucket_ownership
 
 logger = logging.getLogger(__name__)
@@ -161,11 +161,8 @@ async def upload_object(
         if current_used >= quota_bytes:
             raise HTTPException(status_code=413, detail=f"Bucket quota of {bucket['quota_mb']} MB exceeded.")
 
-        try:
-            os.makedirs(os.path.dirname(target_path), mode=0o755, exist_ok=True)
-        except PermissionError as pe:
-            logger.error(f"Permission denied creating target directory for {target_path}: {pe}")
-            raise HTTPException(status_code=500, detail=f"Permission denied creating target path: {os.path.dirname(target_path)}")
+        target_dir = os.path.dirname(target_path)
+        ensure_data_dir(target_dir)
 
         bytes_written = 0
         try:

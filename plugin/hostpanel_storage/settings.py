@@ -95,8 +95,15 @@ def get_data_path() -> str:
 
 
 def ensure_data_dir(path: str):
+    import subprocess
     try:
-        os.makedirs(path, mode=0o700, exist_ok=True)
+        os.makedirs(path, mode=0o775, exist_ok=True)
+    except PermissionError:
+        try:
+            subprocess.run(["sudo", "-n", "mkdir", "-p", path], capture_output=True, text=True, check=False)
+            subprocess.run(["sudo", "-n", "chmod", "777", path], capture_output=True, text=True, check=False)
+        except Exception as se:
+            logger.warning(f"Could not sudo mkdir/chmod {path}: {se}")
     except Exception as e:
         logger.warning(f"Could not create data directory {path}: {e}")
 

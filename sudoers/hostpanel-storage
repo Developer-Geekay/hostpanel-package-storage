@@ -5,6 +5,8 @@
 %hostpanel ALL=(root) NOPASSWD: /bin/systemctl status hostpanel-storage
 %hostpanel ALL=(root) NOPASSWD: /bin/systemctl is-active hostpanel-storage
 %hostpanel ALL=(root) NOPASSWD: /bin/mkdir -p /data/storage*
+%hostpanel ALL=(root) NOPASSWD: /bin/chmod 777 /data/storage*
+%hostpanel ALL=(root) NOPASSWD: /bin/chmod -R 777 /data/storage*
 %hostpanel ALL=(root) NOPASSWD: /usr/sbin/ufw allow 9000/tcp
 %hostpanel ALL=(root) NOPASSWD: /usr/sbin/ufw delete allow 9000/tcp
 %hostpanel ALL=(root) NOPASSWD: /usr/sbin/ufw status
