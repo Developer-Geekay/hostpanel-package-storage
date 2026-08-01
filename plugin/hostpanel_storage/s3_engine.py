@@ -167,17 +167,25 @@ async def s3_get_object(bucket_name: str, object_key: str, req: Request):
 
     b_dict = dict(b_row)
     if not b_dict["public_access"]:
-        is_valid_presigned = False
-        token_param = req.query_params.get("token")
-        if token_param:
-            with get_conn() as conn:
-                p_row = conn.execute("SELECT * FROM storage_presigned_urls WHERE token = ? AND status = 'active'", (token_param,)).fetchone()
-                if p_row:
-                    exp = p_row["expires_at"]
-                    if exp == 0 or time.time() <= exp:
-                        is_valid_presigned = True
+        is_authorized = False
 
-        if not is_valid_presigned and not key_info:
+        # Check File ACL
+        with get_conn() as conn:
+            acl_row = conn.execute("SELECT is_public FROM storage_object_acls WHERE bucket_name = ? AND object_key = ?", (bucket_name, object_key)).fetchone()
+            if acl_row and acl_row["is_public"]:
+                is_authorized = True
+
+        if not is_authorized:
+            token_param = req.query_params.get("token")
+            if token_param:
+                with get_conn() as conn:
+                    p_row = conn.execute("SELECT * FROM storage_presigned_urls WHERE token = ? AND status = 'active'", (token_param,)).fetchone()
+                    if p_row:
+                        exp = p_row["expires_at"]
+                        if exp == 0 or time.time() <= exp:
+                            is_authorized = True
+
+        if not is_authorized and not key_info:
             return xml_response("<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>", status_code=403)
 
     b_path = get_bucket_path(bucket_name, b_dict.get("custom_path"))

@@ -74,11 +74,22 @@ def init_storage_tables():
             created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         );
         """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS storage_object_acls (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            bucket_name TEXT NOT NULL,
+            object_key  TEXT NOT NULL,
+            is_public   INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            UNIQUE(bucket_name, object_key)
+        );
+        """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_buckets_owner ON storage_buckets(owner);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_keys_owner ON storage_access_keys(owner);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_keys_access ON storage_access_keys(access_key);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_presigned_target ON storage_presigned_urls(bucket_name, object_key);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_presigned_token ON storage_presigned_urls(token);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_object_acls ON storage_object_acls(bucket_name, object_key);")
 
         # Insert default settings if missing
         conn.execute("INSERT OR IGNORE INTO storage_settings (key, value) VALUES ('storage_path', ?);", (DEFAULT_DATA_PATH,))

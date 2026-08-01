@@ -258,6 +258,22 @@
       }
     };
 
+    const handleToggleObjectAcl = async (row) => {
+      if (!row || !selectedBucket) return;
+      const isCurrentlyPublic = Boolean(row.is_public);
+      const nextPublic = !isCurrentlyPublic;
+      try {
+        await sdk.fetch('PUT', `/cpanelapi/storage/buckets/${selectedBucket.name}/objects/acl`, {
+          object_key: row.key,
+          is_public: nextPublic
+        });
+        ok(`File '${row.key}' access set to ${nextPublic ? 'Public' : 'Private'}`);
+        loadBucketObjects(selectedBucket.name, currentPrefix);
+      } catch (e) {
+        err(e.message || 'Failed to update file access');
+      }
+    };
+
     const handleUploadObject = async (fileToUpload) => {
       const targetFile = fileToUpload || uploadFile;
       if (!targetFile || !selectedBucket) return;
@@ -660,16 +676,23 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
             <${SdkDataTable}
               columns=${[
                 { key: 'key', label: 'Object Key', type: 'mono' },
+                { key: 'access_badge', label: 'Access', type: 'badge' },
                 { key: 'size_formatted', label: 'Size' },
                 { key: 'content_type', label: 'Type' },
                 { key: 'last_modified', label: 'Last Modified' },
               ]}
-              rows=${objects}
+              rows=${objects.map(obj => ({
+                ...obj,
+                access_badge: obj.access_status === 'public' ? 'Public' : (obj.access_status === 'presigned' ? 'Presigned Link' : 'Private'),
+              }))}
               loading=${objectsLoading}
               empty=${{ title: 'No objects found', desc: 'Upload a file using the dropzone above or send S3 PUT requests to fill this bucket.' }}
               renderActions=${(row) => html`
                 <div style=${{ display: 'flex', gap: 6 }}>
                   ${!row.is_dir && html`
+                    <button class=${`btn ${row.is_public ? 'btn-outline' : 'btn-ghost'} btn-sm`} onClick=${() => handleToggleObjectAcl(row)} title="Toggle File Public / Private Access">
+                      ${row.is_public ? 'Make Private' : 'Make Public'}
+                    </button>
                     <a class="btn btn-ghost btn-sm" href=${`/cpanelapi/storage/buckets/${selectedBucket.name}/objects/download/${encodeURIComponent(row.key)}?token=${encodeURIComponent(findAuthToken())}`} download target="_blank">
                       Download
                     </a>

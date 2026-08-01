@@ -28,6 +28,14 @@ class ObjectInfo(BaseModel):
     last_modified: str
     content_type: str
     is_dir: bool = False
+    is_public: bool = False
+    has_presign: bool = False
+    access_status: str = "private"  # "public", "presigned", or "private"
+
+
+class ObjectAclRequest(BaseModel):
+    object_key: str
+    is_public: bool
 
 
 class PresignRequest(BaseModel):
@@ -94,6 +102,23 @@ async def list_objects(
     if not os.path.exists(target_dir):
         return []
 
+    acls_map = {}
+    presigns_set = set()
+    from db import get_conn
+    with get_conn() as conn:
+        acl_rows = conn.execute("SELECT object_key, is_public FROM storage_object_acls WHERE bucket_name = ?", (bucket_name,)).fetchall()
+        for ar in acl_rows:
+            acls_map[ar["object_key"]] = bool(ar["is_public"])
+
+        presign_rows = conn.execute(
+            "SELECT DISTINCT object_key FROM storage_presigned_urls WHERE bucket_name = ? AND status = 'active' AND (expires_at = 0 OR expires_at >= ?)",
+            (bucket_name, int(time.time()))
+        ).fetchall()
+        for pr in presign_rows:
+            presigns_set.add(pr["object_key"])
+
+    is_bucket_public = bool(bucket.get("public_access", False))
+
     items = []
     try:
         if delimiter == "/":
@@ -111,18 +136,27 @@ async def list_objects(
                                 size_formatted="0 B",
                                 last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(entry.stat().st_mtime)),
                                 content_type="directory",
-                                is_dir=True
+                                is_dir=True,
+                                is_public=is_bucket_public,
+                                has_presign=False,
+                                access_status="public" if is_bucket_public else "private"
                             ))
                     else:
                         stat = entry.stat()
                         content_type, _ = mimetypes.guess_type(entry.name)
+                        file_is_public = is_bucket_public or acls_map.get(rel_path, False)
+                        file_has_presign = rel_path in presigns_set
+                        acc_status = "public" if file_is_public else ("presigned" if file_has_presign else "private")
                         items.append(ObjectInfo(
                             key=rel_path,
                             size_bytes=stat.st_size,
                             size_formatted=format_size(stat.st_size),
                             last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stat.st_mtime)),
                             content_type=content_type or "application/octet-stream",
-                            is_dir=False
+                            is_dir=False,
+                            is_public=file_is_public,
+                            has_presign=file_has_presign,
+                            access_status=acc_status
                         ))
         else:
             for root, dirs, files in os.walk(target_dir):
@@ -131,18 +165,46 @@ async def list_objects(
                     rel_path = os.path.relpath(full_path, b_path).replace("\\", "/")
                     stat = os.stat(full_path)
                     content_type, _ = mimetypes.guess_type(file_name)
+                    file_is_public = is_bucket_public or acls_map.get(rel_path, False)
+                    file_has_presign = rel_path in presigns_set
+                    acc_status = "public" if file_is_public else ("presigned" if file_has_presign else "private")
                     items.append(ObjectInfo(
                         key=rel_path,
                         size_bytes=stat.st_size,
                         size_formatted=format_size(stat.st_size),
                         last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stat.st_mtime)),
                         content_type=content_type or "application/octet-stream",
-                        is_dir=False
+                        is_dir=False,
+                        is_public=file_is_public,
+                        has_presign=file_has_presign,
+                        access_status=acc_status
                     ))
     except Exception as e:
         logger.error(f"Error scanning objects for bucket {bucket_name}: {e}")
 
     return items
+
+
+@router.put("/acl")
+async def update_object_acl(
+    bucket_name: str,
+    payload: ObjectAclRequest,
+    current_user: User = Depends(get_current_user)
+):
+    bucket = get_bucket_record(bucket_name)
+    validate_bucket_ownership(current_user, bucket)
+
+    from db import get_conn
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO storage_object_acls (bucket_name, object_key, is_public)
+               VALUES (?, ?, ?)
+               ON CONFLICT(bucket_name, object_key) DO UPDATE SET is_public = excluded.is_public""",
+            (bucket_name, payload.object_key, int(payload.is_public))
+        )
+
+    log_action(current_user.username, "storage.object_acl_update", f"{bucket_name}/{payload.object_key}", f"is_public={payload.is_public}")
+    return {"bucket_name": bucket_name, "object_key": payload.object_key, "is_public": payload.is_public}
 
 
 @router.post("/upload")
@@ -405,7 +467,15 @@ async def serve_public_object(
             if hmac.compare_digest(sig, expected_sig):
                 is_authorized = True
 
-    # Check 3: Bucket public access
+    # Check 3: File-level public ACL
+    if not is_authorized:
+        from db import get_conn
+        with get_conn() as conn:
+            acl_row = conn.execute("SELECT is_public FROM storage_object_acls WHERE bucket_name = ? AND object_key = ?", (bucket_name, object_key)).fetchone()
+            if acl_row and acl_row["is_public"]:
+                is_authorized = True
+
+    # Check 4: Bucket public access
     if not is_authorized and not bucket["public_access"]:
         raise HTTPException(status_code=403, detail="Access denied. Presigned URL is invalid, revoked, or expired.")
 
