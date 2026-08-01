@@ -83,7 +83,7 @@
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
     const [isDragging, setIsDragging] = useState(false);
-    const [useUuidKey, setUseUuidKey] = useState(false);
+    const [useUuidKey, setUseUuidKey] = useState(true);
 
     // Delete Confirmation State
     const [deleteTarget, setDeleteTarget] = useState(null);
@@ -676,6 +676,7 @@ rclone sync ./my-folder hostpanel-s3:my-bucket/backup`;
             <${SdkDataTable}
               columns=${[
                 { key: 'key', label: 'Object Key', type: 'mono' },
+                { key: 'original_filename', label: 'Original Filename' },
                 { key: 'access_badge', label: 'Access', type: 'badge' },
                 { key: 'size_formatted', label: 'Size' },
                 { key: 'content_type', label: 'Type' },

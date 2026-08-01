@@ -23,6 +23,7 @@ router = APIRouter(prefix="/cpanelapi/storage/buckets/{bucket_name}/objects", ta
 
 class ObjectInfo(BaseModel):
     key: str
+    original_filename: Optional[str] = None
     size_bytes: int
     size_formatted: str
     last_modified: str
@@ -103,12 +104,15 @@ async def list_objects(
         return []
 
     acls_map = {}
+    orig_names_map = {}
     presigns_set = set()
     from db import get_conn
     with get_conn() as conn:
-        acl_rows = conn.execute("SELECT object_key, is_public FROM storage_object_acls WHERE bucket_name = ?", (bucket_name,)).fetchall()
+        acl_rows = conn.execute("SELECT object_key, is_public, original_filename FROM storage_object_acls WHERE bucket_name = ?", (bucket_name,)).fetchall()
         for ar in acl_rows:
             acls_map[ar["object_key"]] = bool(ar["is_public"])
+            if ar["original_filename"]:
+                orig_names_map[ar["object_key"]] = ar["original_filename"]
 
         presign_rows = conn.execute(
             "SELECT DISTINCT object_key FROM storage_presigned_urls WHERE bucket_name = ? AND status = 'active' AND (expires_at = 0 OR expires_at >= ?)",
@@ -132,6 +136,7 @@ async def list_objects(
                             seen_dirs.add(dir_key)
                             items.append(ObjectInfo(
                                 key=dir_key,
+                                original_filename=dir_key,
                                 size_bytes=0,
                                 size_formatted="0 B",
                                 last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(entry.stat().st_mtime)),
@@ -144,14 +149,15 @@ async def list_objects(
                     else:
                         stat = entry.stat()
                         content_type, _ = mimetypes.guess_type(entry.name)
-                        file_is_public = is_bucket_public or acls_map.get(rel_path, False)
+                        file_is_public = acls_map[rel_path] if (rel_path in acls_map) else is_bucket_public
                         file_has_presign = rel_path in presigns_set
                         acc_status = "public" if file_is_public else ("presigned" if file_has_presign else "private")
                         items.append(ObjectInfo(
                             key=rel_path,
+                            original_filename=orig_names_map.get(rel_path, rel_path),
                             size_bytes=stat.st_size,
                             size_formatted=format_size(stat.st_size),
-                            last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stat.st_mtime)),
+                            last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(entry.stat().st_mtime)),
                             content_type=content_type or "application/octet-stream",
                             is_dir=False,
                             is_public=file_is_public,
@@ -165,11 +171,12 @@ async def list_objects(
                     rel_path = os.path.relpath(full_path, b_path).replace("\\", "/")
                     stat = os.stat(full_path)
                     content_type, _ = mimetypes.guess_type(file_name)
-                    file_is_public = is_bucket_public or acls_map.get(rel_path, False)
+                    file_is_public = acls_map[rel_path] if (rel_path in acls_map) else is_bucket_public
                     file_has_presign = rel_path in presigns_set
                     acc_status = "public" if file_is_public else ("presigned" if file_has_presign else "private")
                     items.append(ObjectInfo(
                         key=rel_path,
+                        original_filename=orig_names_map.get(rel_path, rel_path),
                         size_bytes=stat.st_size,
                         size_formatted=format_size(stat.st_size),
                         last_modified=time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stat.st_mtime)),
@@ -211,7 +218,7 @@ async def update_object_acl(
 async def upload_object(
     bucket_name: str,
     key: Optional[str] = Form(None),
-    use_uuid: Optional[bool] = Form(False),
+    use_uuid: Optional[bool] = Form(True),
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
@@ -219,13 +226,14 @@ async def upload_object(
         bucket = get_bucket_record(bucket_name)
         validate_bucket_ownership(current_user, bucket)
 
-        if use_uuid or key == "auto_uuid":
+        original_filename = file.filename or "file"
+        if use_uuid or key == "auto_uuid" or not key:
             import uuid
-            ext = os.path.splitext(file.filename or "")[1]
+            ext = os.path.splitext(original_filename)[1]
             object_key = f"{uuid.uuid4()}{ext}"
         else:
-            raw_name = (key or file.filename or "file").strip()
-            object_key = raw_name.lstrip("/") if raw_name else "file"
+            raw_name = key.strip()
+            object_key = raw_name.lstrip("/") if raw_name else original_filename
 
         b_path = get_bucket_path(bucket_name, bucket.get("custom_path"))
         target_path = safe_object_path(b_path, object_key)
@@ -258,6 +266,16 @@ async def upload_object(
             logger.error(f"File writing error for {target_path}: {fe}")
             raise HTTPException(status_code=500, detail=f"Failed to write file to disk: {str(fe)}")
 
+        # Record original_filename in storage_object_acls
+        from db import get_conn
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO storage_object_acls (bucket_name, object_key, original_filename, is_public)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(bucket_name, object_key) DO UPDATE SET original_filename = excluded.original_filename""",
+                (bucket_name, object_key, original_filename, int(bucket.get("public_access", False)))
+            )
+
         try:
             log_action(current_user.username, "storage.object_upload", f"{bucket_name}/{object_key}", f"size={bytes_written}")
         except Exception as le:
@@ -266,6 +284,7 @@ async def upload_object(
         return {
             "bucket": bucket_name,
             "key": object_key,
+            "original_filename": original_filename,
             "size_bytes": bytes_written,
             "size_formatted": format_size(bytes_written),
             "status": "success"

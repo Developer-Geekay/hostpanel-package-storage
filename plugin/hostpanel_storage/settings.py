@@ -76,14 +76,19 @@ def init_storage_tables():
         """)
         conn.execute("""
         CREATE TABLE IF NOT EXISTS storage_object_acls (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            bucket_name TEXT NOT NULL,
-            object_key  TEXT NOT NULL,
-            is_public   INTEGER NOT NULL DEFAULT 0,
-            created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            bucket_name       TEXT NOT NULL,
+            object_key        TEXT NOT NULL,
+            original_filename TEXT,
+            is_public         INTEGER NOT NULL DEFAULT 0,
+            created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
             UNIQUE(bucket_name, object_key)
         );
         """)
+        try:
+            conn.execute("ALTER TABLE storage_object_acls ADD COLUMN original_filename TEXT;")
+        except Exception:
+            pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_buckets_owner ON storage_buckets(owner);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_keys_owner ON storage_access_keys(owner);")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_storage_keys_access ON storage_access_keys(access_key);")
